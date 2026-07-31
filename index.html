@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Last Shift - Horror Game</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            overflow: hidden;
+            background: #000;
+            font-family: 'Courier New', monospace;
+        }
+        
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+        }
+        
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 100;
+        }
+        
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 4px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+        }
+        
+        #health-bar {
+            position: absolute;
+            bottom: 30px;
+            left: 30px;
+            width: 200px;
+            height: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            border: 2px solid #333;
+            border-radius: 4px;
+        }
+        
+        #health-fill {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, #ff3333, #ff6666);
+            border-radius: 2px;
+            transition: width 0.3s;
+        }
+        
+        #battery-bar {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            width: 150px;
+            height: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            border: 2px solid #333;
+            border-radius: 4px;
+        }
+        
+        #battery-fill {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, #33ff33, #66ff66);
+            border-radius: 2px;
+            transition: width 0.3s;
+        }
+        
+        #battery-icon {
+            position: absolute;
+            bottom: 55px;
+            right: 30px;
+            color: #fff;
+            font-size: 14px;
+            text-shadow: 2px 2px 4px #000;
+        }
+        
+        #objective-text {
+            position: absolute;
+            top: 30px;
+            left: 30px;
+            color: #fff;
+            font-size: 16px;
+            text-shadow: 2px 2px 4px #000;
+            max-width: 400px;
+        }
+        
+        #heartbeat-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle, transparent 50%, rgba(255, 0, 0, 0.3) 100%);
+            opacity: 0;
+            transition: opacity 0.5s;
+            pointer-events: none;
+        }
+        
+        #start-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 200;
+            pointer-events: all;
+        }
+        
+        #start-screen h1 {
+            color: #ff3333;
+            font-size: 48px;
+            margin-bottom: 20px;
+            text-shadow: 0 0 20px #ff0000;
+            animation: pulse 2s infinite;
+        }
+        
+        #start-screen p {
+            color: #ccc;
+            font-size: 18px;
+            margin-bottom: 40px;
+            max-width: 600px;
+            text-align: center;
+            line-height: 1.6;
+        }
+        
+        #start-button {
+            padding: 15px 40px;
+            font-size: 20px;
+            background: #ff3333;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-family: 'Courier New', monospace;
+        }
+        
+        #start-button:hover {
+            background: #ff6666;
+            transform: scale(1.05);
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        #controls-hint {
+            position: absolute;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #888;
+            font-size: 14px;
+            text-align: center;
+        }
+        
+        .vignette {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle, transparent 60%, rgba(0, 0, 0, 0.8) 100%);
+            pointer-events: none;
+        }
+        
+        #jump-scare {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 300;
+            pointer-events: all;
+        }
+        
+        #jump-scare img {
+            max-width: 100%;
+            max-height: 100%;
+        }
+        
+        #chapter-end {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 300;
+            pointer-events: all;
+        }
+        
+        #chapter-end h2 {
+            color: #ff3333;
+            font-size: 36px;
+            margin-bottom: 20px;
+        }
+        
+        #chapter-end p {
+            color: #ccc;
+            font-size: 18px;
+            max-width: 600px;
+            text-align: center;
+            line-height: 1.8;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="canvas-container"></div>
+        
+        <div id="ui-overlay">
+            <div id="crosshair"></div>
+            <div id="health-bar"><div id="health-fill"></div></div>
+            <div id="battery-icon">🔋 Flashlight</div>
+            <div id="battery-bar"><div id="battery-fill"></div></div>
+            <div id="objective-text">Objective: Find the emergency stair key and escape to Floor 11</div>
+            <div id="controls-hint">WASD: Move | Mouse: Look | Click: Flashlight | Shift: Run | E: Interact</div>
+            <div class="vignette"></div>
+            <div id="heartbeat-overlay"></div>
+        </div>
+        
+        <div id="start-screen">
+            <h1>THE LAST SHIFT</h1>
+            <p>You are Sagar, a software engineer trapped in a haunted office building.<br>
+            The power is out. Something evil lurks in the darkness.<br>
+            Find the emergency stair key and escape... if you can.</p>
+            <button id="start-button">START GAME</button>
+        </div>
+        
+        <div id="jump-scare"></div>
+        
+        <div id="chapter-end">
+            <h2>CHAPTER 1 COMPLETE</h2>
+            <p>You reach the emergency staircase.<br>
+            As you step onto the stairs, the fire door slams shut behind you.<br>
+            A whisper echoes near your ear:<br><br>
+            <strong style="color: #ff3333;">"You're not leaving this building alive..."</strong></p>
+        </div>
+    </div>
+
+    <script type="module" src="game.js"></script>
+</body>
+</html>
