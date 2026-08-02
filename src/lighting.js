@@ -1,14 +1,14 @@
 import * as THREE from 'three';
 
-export const LOW_SPEC = true; // always prefer smooth over fancy lighting on this map
-
-export function configureRenderer(renderer) {
+export function configureRenderer(renderer, { pixelRatio = 1 } = {}) {
     renderer.shadowMap.enabled = false;
     renderer.toneMapping = THREE.NoToneMapping;
     renderer.toneMappingExposure = 1;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.setPixelRatio(1);
+    renderer.setPixelRatio(pixelRatio);
     renderer.info.autoReset = true;
+    // Keep pushing frames; don't let the browser treat this as a static page.
+    if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
 }
 
 export function configureAtmosphere(scene) {
@@ -55,13 +55,19 @@ export class LightingRig {
         const beam = new THREE.PointLight(0xfff2d6, 0, 14, 1.4);
         beam.position.set(0, 0, -0.4);
         this.camera.add(beam);
-        this.flashlight = { beam, on: false, baseAmbient: 0.85 };
+        this.flashlight = {
+            beam,
+            on: false,
+            baseAmbient: 0.85,
+            intensityScale: 28
+        };
     }
 
     setFlashlight(on, battery = 1) {
         this.flashlight.on = on;
         const power = on ? Math.max(0.2, battery) : 0;
-        this.flashlight.beam.intensity = power * 28;
+        const scale = this.flashlight.intensityScale ?? 28;
+        this.flashlight.beam.intensity = power * scale;
         if (this.ambient) {
             this.ambient.intensity = on
                 ? this.flashlight.baseAmbient + 0.35 * power

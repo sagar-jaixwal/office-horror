@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>The Last Shift - Horror Game</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%23000'/><circle cx='8' cy='8' r='3' fill='%23d93a34'/></svg>">
     <style>
@@ -12,22 +15,41 @@
             box-sizing: border-box;
         }
 
-        body {
+        html, body {
             overflow: hidden;
             background: #000;
             font-family: 'Courier New', monospace;
             cursor: default;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
         }
 
         #game-container {
             position: relative;
             width: 100vw;
             height: 100vh;
+            height: 100dvh;
         }
 
         #canvas-container {
+            position: absolute;
+            inset: 0;
             width: 100%;
             height: 100%;
+            overflow: hidden;
+        }
+
+        #canvas-container canvas {
+            display: block;
+            position: absolute;
+            inset: 0;
+            width: 100% !important;
+            height: 100% !important;
+            touch-action: none;
         }
 
         #ui-overlay {
@@ -105,11 +127,20 @@
             line-height: 1.5;
         }
 
-        #monster-toggle {
+        #hud-buttons {
             position: absolute;
             top: 24px;
             right: 28px;
             z-index: 50;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 8px;
+            pointer-events: all;
+        }
+
+        #monster-toggle,
+        #graphics-toggle {
             padding: 10px 18px;
             font-size: 13px;
             letter-spacing: 1.5px;
@@ -118,19 +149,53 @@
             border: 1px solid #8a3030;
             border-radius: 2px;
             cursor: pointer;
-            pointer-events: all;
             font-family: 'Courier New', monospace;
             text-transform: uppercase;
         }
 
-        #monster-toggle:hover {
+        #graphics-toggle {
+            border-color: #4a6a8a;
+            min-width: 168px;
+        }
+
+        #monster-toggle:hover,
+        #graphics-toggle:hover {
             background: #d93a34;
             color: #0a0a0a;
+            border-color: #d93a34;
         }
 
         #monster-toggle.hidden-mode {
             border-color: #3d6a45;
             color: #b7d4be;
+        }
+
+        .graphics-panel {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin: 8px 0 18px;
+        }
+
+        .graphics-panel button {
+            padding: 8px 14px;
+            font-size: 12px;
+            letter-spacing: 1.5px;
+            min-width: 72px;
+        }
+
+        .graphics-panel button.active {
+            background: #d93a34;
+            color: #0a0a0a;
+        }
+
+        .graphics-label {
+            color: #8a929a;
+            font-size: 12px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 6px;
         }
 
         #interact-prompt {
@@ -256,6 +321,377 @@
         #pause-screen {
             background: rgba(0, 0, 0, 0.82);
         }
+
+        /* Portrait → ask for landscape (phones play much better sideways). */
+        #rotate-overlay {
+            display: none;
+            position: absolute;
+            inset: 0;
+            z-index: 400;
+            background: radial-gradient(circle at 50% 40%, #1a0c0c 0%, #000 70%);
+            color: #e6e9ec;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 28px 20px;
+            pointer-events: all;
+            touch-action: manipulation;
+        }
+
+        #rotate-overlay.visible {
+            display: flex;
+        }
+
+        #rotate-overlay .phone-icon {
+            width: 72px;
+            height: 120px;
+            border: 3px solid #d93a34;
+            border-radius: 12px;
+            margin-bottom: 22px;
+            position: relative;
+            animation: rotate-hint 1.6s ease-in-out infinite;
+        }
+
+        #rotate-overlay .phone-icon::after {
+            content: '';
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            width: 18px;
+            height: 4px;
+            margin-left: -9px;
+            background: #d93a34;
+            border-radius: 2px;
+        }
+
+        #rotate-overlay h2 {
+            color: #d93a34;
+            font-size: 22px;
+            letter-spacing: 2px;
+            margin-bottom: 12px;
+        }
+
+        #rotate-overlay p {
+            color: #9fa5ab;
+            font-size: 14px;
+            max-width: 280px;
+            line-height: 1.5;
+        }
+
+        @keyframes rotate-hint {
+            0%, 100% { transform: rotate(0deg); }
+            40% { transform: rotate(90deg); }
+            60% { transform: rotate(90deg); }
+        }
+
+        body.portrait-blocked #touch-controls {
+            display: none !important;
+        }
+
+        /* ---- Touch controls (phones / tablets) ---- */
+        #touch-controls {
+            display: none;
+            position: absolute;
+            inset: 0;
+            z-index: 120;
+            pointer-events: none;
+        }
+
+        #touch-controls.visible {
+            display: block;
+        }
+
+        #touch-look {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 58%;
+            height: 100%;
+            pointer-events: all;
+            touch-action: none;
+        }
+
+        #touch-stick {
+            position: absolute;
+            left: max(16px, env(safe-area-inset-left));
+            bottom: max(24px, env(safe-area-inset-bottom));
+            width: 128px;
+            height: 128px;
+            border-radius: 50%;
+            border: 2px solid rgba(230, 233, 236, 0.28);
+            background: rgba(0, 0, 0, 0.28);
+            pointer-events: all;
+            touch-action: none;
+        }
+
+        #touch-stick-knob {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 54px;
+            height: 54px;
+            margin: -27px 0 0 -27px;
+            border-radius: 50%;
+            background: rgba(217, 58, 52, 0.55);
+            border: 2px solid rgba(255, 255, 255, 0.45);
+            transition: background 0.15s;
+        }
+
+        #touch-stick-knob.active {
+            background: rgba(217, 58, 52, 0.85);
+        }
+
+        .touch-actions {
+            position: absolute;
+            right: max(14px, env(safe-area-inset-right));
+            bottom: max(22px, env(safe-area-inset-bottom));
+            display: flex;
+            align-items: flex-end;
+            gap: 12px;
+            pointer-events: all;
+            z-index: 2;
+        }
+
+        .touch-action-col {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .touch-btn {
+            width: 62px;
+            height: 62px;
+            border-radius: 50%;
+            border: 2px solid rgba(230, 233, 236, 0.35);
+            background: rgba(0, 0, 0, 0.42);
+            color: #e6e9ec;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 6px;
+            line-height: 1.15;
+            touch-action: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .touch-btn.pressed,
+        .touch-btn.active {
+            background: rgba(217, 58, 52, 0.75);
+            border-color: #d93a34;
+        }
+
+        #touch-fire {
+            width: 88px;
+            height: 88px;
+            font-size: 14px;
+            border-color: rgba(217, 58, 52, 0.75);
+            background: rgba(120, 20, 18, 0.55);
+        }
+
+        #touch-pause {
+            position: absolute;
+            top: max(14px, env(safe-area-inset-top));
+            left: 50%;
+            transform: translateX(-50%);
+            width: auto;
+            height: 40px;
+            border-radius: 20px;
+            padding: 0 18px;
+            pointer-events: all;
+            font-size: 12px;
+        }
+
+        .touch-hint {
+            display: none;
+            color: #8a929a;
+            font-size: 12px;
+            margin-top: -10px;
+            margin-bottom: 16px;
+        }
+
+        .client-runtime-note {
+            color: #7a9e7e !important;
+            font-size: 13px !important;
+            max-width: 520px !important;
+            line-height: 1.5 !important;
+            margin-bottom: 14px !important;
+            border: 1px solid rgba(122, 158, 126, 0.35);
+            padding: 10px 14px;
+            background: rgba(20, 40, 24, 0.45);
+        }
+
+        .client-runtime-note strong {
+            color: #b7d4be;
+        }
+
+        body.touch-mode .desktop-only { display: none; }
+        body.touch-mode .touch-hint { display: block; }
+
+        body.touch-mode #health-bar,
+        body.touch-mode #stamina-bar,
+        body.touch-mode #battery-bar,
+        body.touch-mode #health-label,
+        body.touch-mode #stamina-label,
+        body.touch-mode #battery-label,
+        body.touch-mode #battery-count {
+            bottom: auto;
+        }
+
+        body.touch-mode #health-label { top: 12px; left: 12px; }
+        body.touch-mode #health-bar { top: 28px; left: 12px; width: 120px; height: 10px; }
+        body.touch-mode #stamina-label { top: 46px; left: 12px; }
+        body.touch-mode #stamina-bar { top: 62px; left: 12px; width: 90px; height: 8px; }
+        body.touch-mode #battery-label { top: 12px; right: 12px; left: auto; }
+        body.touch-mode #battery-bar { top: 28px; right: 12px; left: auto; width: 100px; height: 10px; }
+        body.touch-mode #battery-count { top: 42px; right: 12px; left: auto; bottom: auto; font-size: 12px; }
+        body.touch-mode #objective-text {
+            top: 84px;
+            left: 12px;
+            right: 12px;
+            max-width: none;
+            font-size: 12px;
+        }
+        body.touch-mode #hud-buttons {
+            top: max(12px, env(safe-area-inset-top));
+            right: 12px;
+            transform: scale(0.85);
+            transform-origin: top right;
+        }
+        body.touch-mode #crosshair {
+            width: 4px;
+            height: 4px;
+        }
+
+        @media (max-width: 720px), (pointer: coarse) {
+            .screen {
+                padding: 20px 16px;
+                justify-content: flex-start;
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+                touch-action: pan-y;
+            }
+
+            .screen h1 {
+                font-size: 28px;
+                letter-spacing: 3px;
+                margin-top: 24px;
+                margin-bottom: 10px;
+            }
+
+            .screen h2 { font-size: 24px; }
+
+            .screen p {
+                font-size: 14px;
+                line-height: 1.55;
+                margin-bottom: 16px;
+                max-width: 100%;
+            }
+
+            .controls-grid {
+                font-size: 11px;
+                gap: 4px 12px;
+                margin-bottom: 16px;
+            }
+
+            .graphics-panel {
+                gap: 6px;
+                margin-bottom: 14px;
+            }
+
+            .graphics-panel button {
+                min-width: 64px;
+                padding: 10px 12px;
+                font-size: 11px;
+            }
+
+            #start-button,
+            #retry-button {
+                padding: 14px 28px;
+                font-size: 15px;
+                width: min(100%, 280px);
+            }
+
+            #hud-buttons {
+                top: 12px;
+                right: 10px;
+                gap: 6px;
+            }
+
+            #monster-toggle,
+            #graphics-toggle {
+                padding: 8px 10px;
+                font-size: 10px;
+                letter-spacing: 1px;
+                min-width: 0;
+            }
+
+            #objective-text {
+                top: 12px;
+                left: 12px;
+                right: 120px;
+                font-size: 12px;
+                max-width: none;
+            }
+        }
+
+        @media (max-width: 420px) and (orientation: portrait) {
+            #touch-stick {
+                width: 112px;
+                height: 112px;
+                bottom: max(18px, env(safe-area-inset-bottom));
+            }
+
+            .touch-btn { width: 56px; height: 56px; font-size: 10px; }
+            #touch-fire { width: 76px; height: 76px; }
+        }
+
+        @media (orientation: landscape) and (max-height: 500px) {
+            #touch-stick {
+                width: 110px;
+                height: 110px;
+                left: max(12px, env(safe-area-inset-left));
+                bottom: max(12px, env(safe-area-inset-bottom));
+            }
+
+            .touch-actions {
+                right: max(12px, env(safe-area-inset-right));
+                bottom: max(12px, env(safe-area-inset-bottom));
+                gap: 10px;
+            }
+
+            .touch-action-col { gap: 8px; }
+            .touch-btn { width: 54px; height: 54px; font-size: 10px; }
+            #touch-fire { width: 74px; height: 74px; font-size: 12px; }
+            #touch-pause { top: 8px; height: 34px; }
+
+            body.touch-mode #health-label { top: 8px; left: 10px; }
+            body.touch-mode #health-bar { top: 22px; left: 10px; width: 110px; }
+            body.touch-mode #stamina-label { top: 38px; left: 10px; }
+            body.touch-mode #stamina-bar { top: 52px; left: 10px; width: 80px; }
+            body.touch-mode #battery-label { top: 8px; right: 10px; }
+            body.touch-mode #battery-bar { top: 22px; right: 10px; width: 90px; }
+            body.touch-mode #battery-count { top: 36px; right: 10px; }
+            body.touch-mode #objective-text {
+                top: 8px;
+                left: 50%;
+                right: auto;
+                transform: translateX(-50%);
+                max-width: 46vw;
+                text-align: center;
+                font-size: 11px;
+            }
+            body.touch-mode #hud-buttons {
+                top: 8px;
+                right: 10px;
+                transform: scale(0.75);
+            }
+        }
     </style>
 </head>
 <body>
@@ -276,12 +712,38 @@
             <div id="battery-count">x0</div>
 
             <div id="objective-text">Objective: Find the emergency stair key</div>
-            <button id="monster-toggle" type="button">Hide Monsters</button>
+            <div id="hud-buttons">
+                <button id="graphics-toggle" type="button" title="Cycle graphics quality (G)">Graphics: Medium</button>
+                <button id="monster-toggle" type="button">Hide Monsters</button>
+            </div>
             <div id="interact-prompt"></div>
+            <div id="perf-hud" style="display:none;position:absolute;left:30px;bottom:80px;color:#9fe39f;font:12px/1.4 monospace;text-shadow:0 1px 3px #000;white-space:pre;z-index:60;"></div>
 
             <div class="vignette"></div>
             <div id="heartbeat-overlay"></div>
             <div id="damage-flash"></div>
+        </div>
+
+        <div id="touch-controls" aria-hidden="true">
+            <div id="touch-look"></div>
+            <div id="touch-stick">
+                <div id="touch-stick-knob"></div>
+            </div>
+            <button id="touch-pause" class="touch-btn" type="button">Pause</button>
+            <div class="touch-actions">
+                <div class="touch-action-col">
+                    <button id="touch-flash" class="touch-btn" type="button">Light</button>
+                    <button id="touch-run" class="touch-btn" type="button">Run</button>
+                    <button id="touch-interact" class="touch-btn" type="button">Use</button>
+                </div>
+                <button id="touch-fire" class="touch-btn" type="button">Fire</button>
+            </div>
+        </div>
+
+        <div id="rotate-overlay" aria-live="polite">
+            <div class="phone-icon" aria-hidden="true"></div>
+            <h2>ROTATE YOUR PHONE</h2>
+            <p>Play in <strong>landscape</strong> for the best controls and smoother FPS. Tap here after rotating.</p>
         </div>
 
         <div id="start-screen" class="screen">
@@ -289,7 +751,12 @@
             <p>Randolph's office. The lights failed hours ago.<br>
             Something is hunting through these rooms.<br>
             Find the key and get out alive.</p>
-            <div class="controls-grid">
+            <p class="client-runtime-note">
+                Runs entirely on <strong>your device</strong>. Auto-detects CPU/GPU and unlocks
+                High/Ultra on strong phones &amp; laptops. The shared link only downloads files.
+            </p>
+            <p class="touch-hint">Phone: rotate to landscape · left stick move · drag right to look · Fire / Use / Light</p>
+            <div class="controls-grid desktop-only">
                 <span>W A S D</span><span>Move</span>
                 <span>Mouse</span><span>Look</span>
                 <span>Shift</span><span>Sprint</span>
@@ -297,14 +764,29 @@
                 <span>F</span><span>Flashlight</span>
                 <span>E</span><span>Open door / Interact</span>
                 <span>H</span><span>Hide / show monsters</span>
-                <span>Esc</span><span>Release cursor</span>
+                <span>G</span><span>Cycle graphics quality</span>
+                <span>Esc</span><span>Release cursor / pause</span>
+            </div>
+            <div class="graphics-label">Graphics quality</div>
+            <div id="start-graphics" class="graphics-panel">
+                <button type="button" data-quality="low">Low</button>
+                <button type="button" data-quality="medium">Medium</button>
+                <button type="button" data-quality="high">High</button>
+                <button type="button" data-quality="ultra">Ultra</button>
             </div>
             <button id="start-button" disabled>LOADING 0%</button>
         </div>
 
         <div id="pause-screen" class="screen">
             <h2>PAUSED</h2>
-            <p>Click anywhere to go back in.</p>
+            <p>Tap / click anywhere to resume — or change graphics first.</p>
+            <div class="graphics-label">Graphics quality</div>
+            <div id="pause-graphics" class="graphics-panel">
+                <button type="button" data-quality="low">Low</button>
+                <button type="button" data-quality="medium">Medium</button>
+                <button type="button" data-quality="high">High</button>
+                <button type="button" data-quality="ultra">Ultra</button>
+            </div>
         </div>
 
         <div id="death-screen" class="screen">

@@ -129,6 +129,7 @@ export function createLaserGun(camera) {
 }
 
 const _mid = new THREE.Vector3();
+const _dir = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
 const _up = new THREE.Vector3(0, 1, 0);
 
@@ -155,7 +156,7 @@ export function showLaserBeam(gun, from, to) {
     _mid.copy(from).add(to).multiplyScalar(0.5);
     gun.beam.position.copy(_mid);
 
-    const dir = to.clone().sub(from).normalize();
-    _quat.setFromUnitVectors(_up, dir);
+    _dir.copy(to).sub(from).normalize();
+    _quat.setFromUnitVectors(_up, _dir);
     gun.beam.quaternion.copy(_quat);
 }

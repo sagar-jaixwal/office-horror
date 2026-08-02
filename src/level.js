@@ -23,6 +23,8 @@ export class Level {
         this.renderDistance = 12;
         // Keep structural walls in the collider set even when far visually.
         this.collisionDistance = 16;
+        // Mobile / Low: cheaper probes (fewer rays, fewer sub-steps).
+        this.collisionLite = false;
         this._streamX = Infinity;
         this._streamZ = Infinity;
         this._lastFloor = null;
@@ -70,21 +72,26 @@ export class Level {
             const isFloor = /carpet|floor|tile|dirt|concrete_floor/i.test(name);
             const isDoor = /door/i.test(name);
             const isGlass = /glass/i.test(name);
-            // Paintings, papers, plants etc. cost draw-calls for no gameplay.
-            const isDecor = /painting|document|plant|cardboard|cork|trash|leather|cloth|drawer|locker|checkpoint|interface|green_checkpoint/i.test(name);
+            // Paintings, papers, plants, small props — no collision (AI was wedging on these).
+            const isDecor = /painting|document|plant|cardboard|cork|trash|leather|cloth|drawer|locker|checkpoint|interface|green_checkpoint|lamp|plastic/i.test(name);
 
             // Downgrade PBR → unlit. Biggest frame-time win on this map.
             child.material = cheapifyMaterials(child.material);
-
-            if (isDecor || isGlass) {
-                child.visible = false;
-                return;
-            }
 
             const box = new THREE.Box3().setFromObject(child);
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
             const radius = Math.max(size.x, size.z) * 0.5;
+            // Tiny office clutter shouldn't block hunters (or the player).
+            const isClutter = !isFloor && !isDoor && radius < 1.15 && size.y < 1.6;
+
+            if (isDecor || isGlass) {
+                child.visible = false;
+                return;
+            }
+            // Keep clutter visible, but do not collide — stops AI wedging on chairs/props.
+            if (isClutter) return;
+
             const alwaysVisible = isFloor && radius > 8;
 
             this.renderChunks.push({
@@ -202,7 +209,7 @@ export class Level {
     isEmbedded(x, z, radius = 0.34, height = null) {
         const h = height ?? ((this._lastFloor ?? this.spawn.y) + 1.0);
         // Tight radius: standing against a wall should NOT count as stuck.
-        if (!this.isBlocked(x, z, radius * 0.45, h)) return false;
+        if (!this.isBlocked(x, z, radius * 0.45, h, true)) return false;
         let hits = 0;
         const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
         for (const [dx, dz] of dirs) {
@@ -237,16 +244,71 @@ export class Level {
         return false;
     }
 
+    // Unstick floor-space agents (monsters). Prefers open ground toward a goal.
+    unstickGround(position, radius = 0.32, preferX = 0, preferZ = 0) {
+        const height = position.y + 1.0;
+        this.depenetrate(position, radius, height);
+
+        const floorHere = this.groundAt(position.x, position.z, position.y + 2.5, true);
+        if (floorHere !== null) position.y = floorHere;
+
+        if (!this.isBlocked(position.x, position.z, radius * 0.55, height)) {
+            return false;
+        }
+
+        const preferAng = Math.atan2(preferX - position.x, preferZ - position.z);
+        const angles = [];
+        for (let i = 0; i < 16; i++) angles.push(preferAng + (i / 16) * Math.PI * 2);
+
+        for (const ang of angles) {
+            for (const dist of [0.4, 0.8, 1.4, 2.2, 3.5]) {
+                const nx = position.x + Math.sin(ang) * dist;
+                const nz = position.z + Math.cos(ang) * dist;
+                const floor = this.groundAt(nx, nz, position.y + 2.5, true);
+                if (floor === null) continue;
+                if (Math.abs(floor - position.y) > 0.85) continue;
+                if (this.isBlocked(nx, nz, radius, floor + 1.0)) continue;
+                position.x = nx;
+                position.z = nz;
+                position.y = floor;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Short hop toward a goal onto clear floor — used when AI is wedged on props.
+    hopToward(position, targetX, targetZ, radius = 0.32, hop = 2.2) {
+        const dx = targetX - position.x;
+        const dz = targetZ - position.z;
+        const len = Math.hypot(dx, dz) || 1;
+        const baseAng = Math.atan2(dx, dz);
+        const offsets = [0, 0.4, -0.4, 0.9, -0.9, 1.4, -1.4, Math.PI];
+
+        for (const offset of offsets) {
+            const ang = baseAng + offset;
+            const nx = position.x + Math.sin(ang) * hop;
+            const nz = position.z + Math.cos(ang) * hop;
+            const floor = this.groundAt(nx, nz, position.y + 2.5, true);
+            if (floor === null) continue;
+            if (Math.abs(floor - position.y) > 1.0) continue;
+            if (this.isBlocked(nx, nz, radius, floor + 1.0)) continue;
+            position.x = nx;
+            position.z = nz;
+            position.y = floor;
+            return true;
+        }
+        return this.unstickGround(position, radius, targetX, targetZ);
+    }
+
     // Nudge out of shallow wall overlaps along probe normals.
     depenetrate(position, radius, height) {
         let pushX = 0;
         let pushZ = 0;
         let any = false;
-        const dirs = 8;
-        for (let i = 0; i < dirs; i++) {
-            const ang = (i / dirs) * Math.PI * 2;
-            const dx = Math.sin(ang);
-            const dz = Math.cos(ang);
+        // 4 rays is enough for soft push and much cheaper than 8×map.
+        const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (const [dx, dz] of dirs) {
             const hit = this.probe(position.x, position.z, dx, dz, radius + 0.04, height);
             if (!hit || hit.distance >= radius) continue;
             const push = (radius - hit.distance) + 0.02;
@@ -261,7 +323,8 @@ export class Level {
     }
 
     // Downward cast. Returns the highest walkable hit below `fromY`, or null.
-    groundAt(x, z, fromY = null) {
+    // floorsOnly: ignore desks/props so agents don't climb furniture and wedge.
+    groundAt(x, z, fromY = null, floorsOnly = false) {
         const top = fromY ?? ((this._lastFloor ?? this.spawn.y) + 3.5);
         _origin.set(x, top, z);
         this.raycaster.set(_origin, _down);
@@ -270,22 +333,24 @@ export class Level {
         const hits = this.raycaster.intersectObjects(this.floorList(), false);
         for (const hit of hits) {
             if (hit.face) {
-                const normal = hit.face.normal.clone()
+                this._normal.copy(hit.face.normal)
                     .transformDirection(hit.object.matrixWorld)
                     .normalize();
-                if (normal.y < 0.45) continue;
+                if (this._normal.y < 0.45) continue;
             }
             this._lastFloor = hit.point.y;
             return hit.point.y;
         }
 
+        if (floorsOnly) return null;
+
         const all = this.raycaster.intersectObjects(this.colliderList(), false);
         for (const hit of all) {
             if (hit.face) {
-                const normal = hit.face.normal.clone()
+                this._normal.copy(hit.face.normal)
                     .transformDirection(hit.object.matrixWorld)
                     .normalize();
-                if (normal.y < 0.45) continue;
+                if (this._normal.y < 0.45) continue;
             }
             this._lastFloor = hit.point.y;
             return hit.point.y;
@@ -300,7 +365,7 @@ export class Level {
         // Need headroom — reject attic crawlspaces and wedged spots.
         const ceiling = this.ceilingAt(x, z, floor + 0.2);
         if (ceiling !== null && ceiling - floor < 1.6) return false;
-        if (this.isBlocked(x, z, radius, floor + 1.0)) return false;
+        if (this.isBlocked(x, z, radius, floor + 1.0, true)) return false;
         return true;
     }
 
@@ -499,15 +564,16 @@ export class Level {
         return null;
     }
 
-    isBlocked(x, z, radius = 0.34, height = null) {
+    isBlocked(x, z, radius = 0.34, height = null, thorough = false) {
         const h = height ?? ((this._lastFloor ?? this.spawn.y) + 1.0);
-        // 8 directions catch diagonal walls / corners the 4-cardinal test missed.
-        for (let i = 0; i < 8; i++) {
-            const ang = (i / 8) * Math.PI * 2;
+        // Lite: 4 rays only. Full: 8 dirs + second height for walkability.
+        const count = (!thorough || this.collisionLite) ? 4 : 8;
+        for (let i = 0; i < count; i++) {
+            const ang = (i / count) * Math.PI * 2;
             const hit = this.probe(x, z, Math.sin(ang), Math.cos(ang), radius + 0.08, h);
             if (hit && hit.distance < radius) return true;
         }
-        // Second height stops stepping under/over thin wall slabs.
+        if (!thorough || this.collisionLite) return false;
         const h2 = h - 0.45;
         for (let i = 0; i < 8; i++) {
             const ang = (i / 8) * Math.PI * 2;
@@ -521,30 +587,36 @@ export class Level {
         const eyeHeight = options.eyeHeight ?? this.eyeHeight;
         // When false, `position.y` is the floor (monsters); otherwise eye height (player).
         const fromEye = options.fromEye !== false;
+        const floorsOnly = Boolean(options.floorsOnly);
+        const alwaysDepenetrate = Boolean(options.alwaysDepenetrate);
         const total = Math.hypot(dx, dz);
         if (total < 1e-6) return;
 
         // Sub-step so a fast frame cannot tunnel through thin wallpaper planes.
-        const maxStep = Math.max(0.08, radius * 0.7);
+        const maxStep = this.collisionLite
+            ? Math.max(0.14, radius * 1.1)
+            : Math.max(0.08, radius * 0.7);
         const steps = Math.max(1, Math.ceil(total / maxStep));
         const sx = dx / steps;
         const sz = dz / steps;
         for (let i = 0; i < steps; i++) {
-            this._resolveMovementStep(position, sx, sz, radius, eyeHeight, fromEye);
+            this._resolveMovementStep(position, sx, sz, radius, eyeHeight, fromEye, floorsOnly);
         }
-        this.depenetrate(
-            position,
-            radius,
-            (fromEye ? position.y - eyeHeight : position.y) + 1.0
-        );
+        if (!this.collisionLite || alwaysDepenetrate) {
+            this.depenetrate(
+                position,
+                radius,
+                (fromEye ? position.y - eyeHeight : position.y) + 1.0
+            );
+        }
         if (fromEye) this.snapToGround(position);
         else {
-            const floor = this.groundAt(position.x, position.z, position.y + 2);
+            const floor = this.groundAt(position.x, position.z, position.y + 2, floorsOnly);
             if (floor !== null) position.y = floor;
         }
     }
 
-    _resolveMovementStep(position, dx, dz, radius, eyeHeight, fromEye) {
+    _resolveMovementStep(position, dx, dz, radius, eyeHeight, fromEye, floorsOnly = false) {
         const eye = fromEye ? position.y : position.y + eyeHeight;
         const floorGuess = fromEye ? eye - eyeHeight : position.y;
         const height = floorGuess + 1.0;
@@ -570,10 +642,13 @@ export class Level {
             const nz = position.z + moveZ;
             if (this.isBlocked(nx, nz, radius, height)) return false;
 
-            const floor = this.groundAt(nx, nz, eye + 1.2);
+            const floor = this.groundAt(nx, nz, eye + 1.2, floorsOnly);
             if (floor === null) return false;
-            if (floor - floorGuess > 0.45) return false;
-            if (floorGuess - floor > 1.8) return false;
+            // Monsters: allow slightly larger steps so doorway lips don't trap them.
+            const stepUp = floorsOnly ? 0.65 : 0.45;
+            const stepDown = floorsOnly ? 2.2 : 1.8;
+            if (floor - floorGuess > stepUp) return false;
+            if (floorGuess - floor > stepDown) return false;
 
             position.x = nx;
             position.z = nz;

@@ -5,12 +5,37 @@ import { createMonster } from './src/characters.js';
 import { loadModels, assets } from './src/models.js';
 import { createLaserGun, updateGun, showLaserBeam } from './src/gun.js';
 import { Audio } from './src/audio.js';
+import {
+    QUALITY_PRESETS,
+    loadSavedQuality,
+    nextQuality,
+    applyQuality,
+    createRendererOptions,
+    fitRendererToScreen
+} from './src/graphics.js';
+import { isTouchDevice, setupTouchControls } from './src/touchControls.js';
+import {
+    registerClientCache,
+    downloadAssetsToClient,
+    describeClientRuntime
+} from './src/clientRuntime.js';
+import {
+    detectHardware,
+    engagePerformanceMode,
+    releasePerformanceMode,
+    enterGameDisplayMode
+} from './src/hardware.js';
+
+const MODEL_LABELS = {
+    building: 'map',
+    crawler: 'monster',
+    gun: 'gun'
+};
 
 const EYE_HEIGHT = 1.68;
 const WALK_SPEED = 2.6;
 const RUN_SPEED = 4.9;
 const BATTERY_DRAIN = 1.15;
-const CHARACTER_DRAW_DISTANCE = 12;
 const MONSTER_REVEAL_DELAY = 30;
 const LASER_RANGE = 22;
 const LASER_DAMAGE = 34;
@@ -23,6 +48,10 @@ const raycaster = new THREE.Raycaster();
 const screenCentre = new THREE.Vector2(0, 0);
 const muzzleWorld = new THREE.Vector3();
 const hitPoint = new THREE.Vector3();
+const facingDir = new THREE.Vector3();
+const torsoPoint = new THREE.Vector3();
+const toTarget = new THREE.Vector3();
+const _fwd = new THREE.Vector3(0, 0, -1);
 
 const input = { forward: false, back: false, left: false, right: false, run: false };
 
@@ -51,46 +80,190 @@ const state = {
     playTime: 0,
     monstersReleased: false,
     monstersHidden: false,
-    frameCount: 0
+    frameCount: 0,
+    perfEnabled: false,
+    perfFrames: 0,
+    perfLast: 0,
+    perfFps: 0,
+    quality: 'medium',
+    characterDraw: 12,
+    monsterAiEvery: 2,
+    collisionLite: false,
+    isMobile: false,
+    awaitingLandscape: false,
+    hardware: null
 };
 const monsters = [];
 const ui = {};
+let touchControls = null;
+let perfHandles = null;
 
 function cacheUI() {
     for (const id of [
         'health-fill', 'battery-fill', 'stamina-fill', 'objective-text', 'heartbeat-overlay',
         'damage-flash', 'start-screen', 'chapter-end', 'death-screen', 'pause-screen',
-        'interact-prompt', 'battery-count', 'crosshair', 'start-button', 'monster-toggle'
+        'interact-prompt', 'battery-count', 'crosshair', 'start-button', 'monster-toggle',
+        'graphics-toggle', 'perf-hud', 'start-graphics', 'pause-graphics', 'rotate-overlay'
     ]) {
         ui[id] = document.getElementById(id);
     }
 }
 
+function isLandscape() {
+    return window.matchMedia('(orientation: landscape)').matches
+        || window.innerWidth > window.innerHeight;
+}
+
+function updateLandscapeGate() {
+    if (!state.isMobile || !ui['rotate-overlay']) return;
+    // Only block once they try to play / are in-game — start screen stays readable.
+    const needRotate = !isLandscape() && (state.started || state.awaitingLandscape);
+    ui['rotate-overlay'].classList.toggle('visible', needRotate);
+    document.body.classList.toggle('portrait-blocked', needRotate);
+
+    if (state.awaitingLandscape && isLandscape() && !state.started) {
+        state.awaitingLandscape = false;
+        beginGame();
+    }
+}
+
+async function requestLandscape() {
+    try {
+        const orient = screen.orientation;
+        if (orient?.lock) {
+            await orient.lock('landscape');
+            return;
+        }
+    } catch {
+        // Browsers often require fullscreen + gesture; overlay covers the rest.
+    }
+    try {
+        const el = document.documentElement;
+        if (el.requestFullscreen) await el.requestFullscreen();
+        const orient = screen.orientation;
+        if (orient?.lock) await orient.lock('landscape');
+    } catch {
+        // User can rotate manually — overlay stays until landscape.
+    }
+}
+
+function graphicsContext() {
+    return {
+        renderer,
+        camera,
+        scene,
+        level,
+        lighting,
+        gun,
+        isMobile: state.isMobile,
+        hardware: state.hardware
+    };
+}
+
+function setGraphicsQuality(id, { announce = true } = {}) {
+    if (!QUALITY_PRESETS[id]) return;
+    state.quality = id;
+    const preset = applyQuality(id, graphicsContext());
+    state.characterDraw = preset.characterDraw;
+    state.monsterAiEvery = preset.monsterAiEvery;
+    state.collisionLite = Boolean(preset.collisionLite);
+    syncGraphicsUI();
+    if (announce) {
+        const tip = state.isMobile && !preset.gunVisible ? ' (gun hidden for FPS)' : '';
+        flashPrompt(`Graphics: ${preset.label}${tip}`);
+    }
+}
+
+function syncGraphicsUI() {
+    const label = QUALITY_PRESETS[state.quality]?.label || 'Medium';
+    if (ui['graphics-toggle']) {
+        ui['graphics-toggle'].textContent = `Graphics: ${label}`;
+    }
+    for (const panelId of ['start-graphics', 'pause-graphics']) {
+        const panel = ui[panelId];
+        if (!panel) continue;
+        for (const btn of panel.querySelectorAll('[data-quality]')) {
+            btn.classList.toggle('active', btn.dataset.quality === state.quality);
+        }
+    }
+}
+
+function cycleGraphicsQuality() {
+    setGraphicsQuality(nextQuality(state.quality));
+}
+
 async function init() {
     cacheUI();
+
+    state.hardware = detectHardware();
+    state.isMobile = state.hardware.isMobile || isTouchDevice();
+    if (state.isMobile) document.body.classList.add('touch-mode');
+    console.info('[hardware]', state.hardware);
 
     scene = new THREE.Scene();
     configureAtmosphere(scene);
     timer.connect(document);
 
-    camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.15, 24);
+    state.quality = loadSavedQuality(state.hardware);
+    const initialPreset = QUALITY_PRESETS[state.quality] || QUALITY_PRESETS.medium;
+
+    camera = new THREE.PerspectiveCamera(
+        65,
+        window.innerWidth / window.innerHeight,
+        0.15,
+        initialPreset.cameraFar
+    );
     camera.rotation.order = 'YXZ';
     scene.add(camera);
 
-    renderer = new THREE.WebGLRenderer({
-        antialias: false,
-        powerPreference: 'high-performance',
-        stencil: false,
-        depth: true
+    // Ask the browser for the discrete / high-performance GPU + optional AA on High/Ultra.
+    const rendererOpts = createRendererOptions(state.hardware, state.quality);
+    try {
+        renderer = new THREE.WebGLRenderer(rendererOpts);
+    } catch {
+        renderer = new THREE.WebGLRenderer({
+            antialias: false,
+            powerPreference: 'high-performance',
+            depth: true,
+            stencil: false
+        });
+    }
+    configureRenderer(renderer, {
+        pixelRatio: Math.min(initialPreset.pixelRatio, window.devicePixelRatio || 1)
     });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    configureRenderer(renderer);
     document.getElementById('canvas-container').appendChild(renderer.domElement);
+    fitRendererToScreen(
+        renderer,
+        camera,
+        Math.min(initialPreset.pixelRatio, window.devicePixelRatio || 1)
+    );
 
-    await loadModels((fraction) => {
-        ui['start-button'].textContent = `LOADING ${Math.round(fraction * 100)}%`;
+    // Host only serves files. Avoid double-downloading heavy assets on mobile /
+    // port-share (that made the loading button look frozen at 0%).
+    if (state.isMobile) {
+        ui['start-button'].textContent = 'WARMING DECODER…';
+        await downloadAssetsToClient((fraction, label) => {
+            ui['start-button'].textContent =
+                `PREP ${Math.round(fraction * 100)}% (${label || 'assets'})`;
+        }, { skipHeavy: true });
+    } else {
+        ui['start-button'].textContent = 'DOWNLOADING 0%';
+        await downloadAssetsToClient((fraction, label) => {
+            ui['start-button'].textContent =
+                `DOWNLOADING ${Math.round(fraction * 100)}% — ${label || 'assets'}`;
+        }, { skipHeavy: false });
+    }
+
+    await loadModels((fraction, name) => {
+        const label = MODEL_LABELS[name] || name || 'model';
+        const pct = Math.round(fraction * 100);
+        ui['start-button'].textContent = `LOADING ${label.toUpperCase()} ${pct}%`;
+    }, {
+        sequential: state.isMobile,
+        timeoutMs: state.isMobile ? 90000 : 60000
     });
 
+    ui['start-button'].textContent = 'BUILDING LEVEL…';
     level = new Level(scene).build();
     // spawn.y is the floor; player.position.y is eye height above that floor.
     player.position.set(level.spawn.x, level.spawn.y + EYE_HEIGHT, level.spawn.z);
@@ -102,13 +275,29 @@ async function init() {
     gun = createLaserGun(camera);
     scene.add(gun.beam);
 
+    setGraphicsQuality(state.quality, { announce: false });
+
     prepareMonsters();
     setupEventListeners();
+    setupMobileControls();
+    updateLandscapeGate();
     updateUI();
     exposeDebugHooks();
 
-    ui['start-button'].textContent = 'ENTER THE OFFICE';
+    ui['start-button'].textContent = state.isMobile ? 'TAP TO ENTER (LANDSCAPE)' : 'ENTER THE OFFICE';
     ui['start-button'].disabled = false;
+
+    // Cache for next visit only after the game is ready (won't stall first load).
+    registerClientCache({ deferMs: 2500 });
+
+    // ?perf=1 shows live draw calls / triangles / FPS.
+    if (new URLSearchParams(location.search).has('perf') && ui['perf-hud']) {
+        ui['perf-hud'].style.display = 'block';
+        state.perfEnabled = true;
+        state.perfFrames = 0;
+        state.perfLast = performance.now();
+        state.perfFps = 0;
+    }
 
     renderer.setAnimationLoop(frame);
 }
@@ -177,8 +366,12 @@ function exposeDebugHooks() {
             fixtures: lighting.fixtures.length,
             drawCalls: renderer.info.render.calls,
             triangles: renderer.info.render.triangles,
+            quality: state.quality,
+            hardware: state.hardware,
+            runtime: describeClientRuntime(),
             playerBlocked: level.isBlocked(player.position.x, player.position.z, 0.34)
-        })
+        }),
+        setQuality: (id) => setGraphicsQuality(id)
     };
 }
 
@@ -203,14 +396,22 @@ function prepareMonsters() {
             container,
             waypoint: spec.waypoint,
             phase: Math.random() * Math.PI * 2,
-            mode: 'patrol',
+            mode: 'chase',
             dropProgress: 0,
             growlTimer: 2 + Math.random() * 4,
-            profile: { ...rig.profile, speed: Math.max(1.35, rig.profile.speed), chase: Math.max(2.6, rig.profile.chase) },
+            // Fast enough to close distance; wall-slide keeps them pressing in.
+            profile: {
+                ...rig.profile,
+                speed: Math.max(1.8, rig.profile.speed * 1.35),
+                chase: Math.max(3.4, (rig.profile.chase || 2) * 1.55),
+                sight: Math.max(40, rig.profile.sight || 12)
+            },
             health: 100,
             active: false,
             dead: false,
-            frozen: false
+            frozen: false,
+            stuckTimer: 0,
+            sidestep: 1
         };
 
         container.traverse((child) => {
@@ -224,11 +425,14 @@ function prepareMonsters() {
 function activateMonster(monster, spot) {
     monster.container.position.set(spot.x, spot.y, spot.z);
     monster.rig.root.rotation.x = 0;
-    monster.mode = 'patrol';
+    // Hunt immediately — do not wait for line-of-sight in this maze.
+    monster.mode = 'chase';
     monster.active = true;
     monster.dead = false;
     monster.frozen = false;
     monster.health = 100;
+    monster.stuckTimer = 0;
+    monster.sidestep = Math.random() < 0.5 ? 1 : -1;
     monster.growlTimer = 1.5 + Math.random() * 2;
     monster.container.visible = !state.monstersHidden;
     monster.container.rotation.y = Math.atan2(
@@ -272,8 +476,9 @@ function spawnNextMonster() {
 
 function findRevealSpots(count, occupied = []) {
     const spots = [];
-    const minDist = 11;
-    const maxDist = 22;
+    // Close enough to reach you, far enough not to spawn on top of you.
+    const minDist = 7;
+    const maxDist = 14;
     const sectorOffset = Math.random() * Math.PI * 2;
     // Prefer evenly spaced sectors so each wave lands in a different direction.
     const attempts = Math.max(96, count * 48);
@@ -316,6 +521,43 @@ function findRevealSpots(count, occupied = []) {
     return spots;
 }
 
+function setupMobileControls() {
+    touchControls = setupTouchControls({
+        isPlaying,
+        input,
+        player,
+        onShoot: () => shootLaser(),
+        onInteract: () => interact(),
+        onFlashlight: () => toggleFlashlight(),
+        onPause: () => pauseGame()
+    });
+}
+
+function pauseGame() {
+    if (!state.started || state.dead || state.complete || state.paused) return;
+    state.paused = true;
+    ui['pause-screen'].style.display = 'flex';
+    audio.pauseMusic();
+    touchControls?.hide();
+    releasePerformanceMode(perfHandles);
+    perfHandles = null;
+    if (!state.isMobile) document.exitPointerLock?.();
+}
+
+function resumeGame() {
+    if (!state.started || state.dead || state.complete) return;
+    state.paused = false;
+    ui['pause-screen'].style.display = 'none';
+    audio.resumeMusic();
+    engagePerformanceMode().then((h) => { perfHandles = h; });
+    if (state.isMobile) {
+        touchControls?.show();
+        enterGameDisplayMode();
+    } else {
+        document.body.requestPointerLock();
+    }
+}
+
 function setupEventListeners() {
     document.getElementById('start-button').addEventListener('click', beginGame);
     document.getElementById('retry-button').addEventListener('click', () => window.location.reload());
@@ -324,7 +566,7 @@ function setupEventListeners() {
         event.stopPropagation();
         toggleMonsterVisibility();
         // Keep playing — re-lock if the click stole focus from the canvas.
-        if (state.started && !state.paused && !state.dead && !state.complete) {
+        if (!state.isMobile && state.started && !state.paused && !state.dead && !state.complete) {
             document.body.requestPointerLock();
         }
     });
@@ -339,6 +581,9 @@ function setupEventListeners() {
             case 'KeyE': interact(); break;
             case 'KeyH':
                 if (!event.repeat) toggleMonsterVisibility();
+                break;
+            case 'KeyG':
+                if (!event.repeat) cycleGraphicsQuality();
                 break;
             case 'KeyF':
                 if (!event.repeat) toggleFlashlight();
@@ -364,14 +609,14 @@ function setupEventListeners() {
     });
 
     document.addEventListener('mousemove', (event) => {
-        if (!isPlaying()) return;
+        if (!isPlaying() || state.isMobile) return;
         player.yaw -= event.movementX * 0.0022;
         player.pitch -= event.movementY * 0.0022;
         player.pitch = THREE.MathUtils.clamp(player.pitch, -Math.PI / 2 + 0.05, Math.PI / 2 - 0.05);
     });
 
     renderer.domElement.addEventListener('mousedown', (event) => {
-        if (!state.started || state.dead || state.complete) return;
+        if (!state.started || state.dead || state.complete || state.isMobile) return;
         if (document.pointerLockElement !== document.body) {
             document.body.requestPointerLock();
             return;
@@ -388,11 +633,29 @@ function setupEventListeners() {
         if (document.pointerLockElement === document.body) event.preventDefault();
     });
 
-    ui['pause-screen'].addEventListener('click', () => {
-        if (state.paused) document.body.requestPointerLock();
+    ui['pause-screen'].addEventListener('click', (event) => {
+        // Don't resume when clicking a graphics button.
+        if (event.target.closest('[data-quality]')) return;
+        if (state.paused) resumeGame();
     });
 
+    ui['graphics-toggle']?.addEventListener('click', (event) => {
+        event.stopPropagation();
+        cycleGraphicsQuality();
+    });
+
+    for (const panelId of ['start-graphics', 'pause-graphics']) {
+        ui[panelId]?.addEventListener('click', (event) => {
+            const btn = event.target.closest('[data-quality]');
+            if (!btn) return;
+            event.stopPropagation();
+            setGraphicsQuality(btn.dataset.quality);
+        });
+    }
+
     document.addEventListener('pointerlockchange', () => {
+        // Mobile uses its own pause button — pointer lock is desktop-only.
+        if (state.isMobile) return;
         const locked = document.pointerLockElement === document.body;
         state.paused = state.started && !locked && !state.dead && !state.complete;
         ui['pause-screen'].style.display = state.paused ? 'flex' : 'none';
@@ -400,11 +663,42 @@ function setupEventListeners() {
         else if (state.started && !state.dead && !state.complete) audio.resumeMusic();
     });
 
+    const refitViewport = () => {
+        applyQuality(state.quality, graphicsContext());
+        updateLandscapeGate();
+    };
+
     window.addEventListener('resize', () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
+        refitViewport();
     });
+
+    // Mobile browsers lie about size during rotate — refit several times.
+    window.addEventListener('orientationchange', () => {
+        refitViewport();
+        setTimeout(refitViewport, 50);
+        setTimeout(refitViewport, 200);
+        setTimeout(() => {
+            refitViewport();
+            if (state.isMobile && state.started && isLandscape() && !state.paused) {
+                touchControls?.show();
+            }
+        }, 400);
+    });
+
+    window.visualViewport?.addEventListener('resize', () => {
+        refitViewport();
+    });
+
+    ui['rotate-overlay']?.addEventListener('click', () => {
+        requestLandscape();
+        setTimeout(refitViewport, 100);
+        setTimeout(refitViewport, 350);
+    });
+
+    // Prevent iOS rubber-band / pull-to-refresh while playing.
+    document.addEventListener('touchmove', (event) => {
+        if (state.started && !state.paused) event.preventDefault();
+    }, { passive: false });
 }
 
 function toggleMonsterVisibility() {
@@ -424,16 +718,46 @@ function toggleMonsterVisibility() {
 }
 
 function beginGame() {
+    if (state.isMobile && !isLandscape()) {
+        state.awaitingLandscape = true;
+        updateLandscapeGate();
+        requestLandscape();
+        return;
+    }
+
+    state.awaitingLandscape = false;
     ui['start-screen'].style.display = 'none';
+    ui['rotate-overlay']?.classList.remove('visible');
     state.started = true;
+    state.paused = false;
     state.playTime = 0;
     state.monstersReleased = false;
     audio.start();
-    document.body.requestPointerLock();
+
+    // Push OS / browser toward sustained GPU + unlocked refresh while playing.
+    engagePerformanceMode().then((h) => { perfHandles = h; });
+    enterGameDisplayMode();
+
+    const tier = state.hardware?.tier || 'medium';
+    // Refit after fullscreen/landscape so we never keep a half-width portrait canvas.
+    applyQuality(state.quality, graphicsContext());
+    setTimeout(() => applyQuality(state.quality, graphicsContext()), 100);
+    setTimeout(() => applyQuality(state.quality, graphicsContext()), 350);
+
+    if (state.isMobile) {
+        requestLandscape();
+        touchControls?.show();
+        updateLandscapeGate();
+        flashPrompt(`Using your ${tier.toUpperCase()} GPU tier — Graphics: ${QUALITY_PRESETS[state.quality]?.label}`);
+    } else {
+        document.body.requestPointerLock();
+        flashPrompt(`Hardware tier ${tier.toUpperCase()} — Graphics: ${QUALITY_PRESETS[state.quality]?.label}`);
+    }
     setObjective('Objective: Explore — something arrives in 30 seconds');
 }
 
 function isPlaying() {
+    if (state.isMobile && !isLandscape()) return false;
     return state.started && !state.paused && !state.dead && !state.complete;
 }
 
@@ -448,19 +772,20 @@ function shootLaser() {
     raycaster.setFromCamera(screenCentre, camera);
     raycaster.far = LASER_RANGE;
 
-    const facing = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    facingDir.copy(_fwd).applyQuaternion(camera.quaternion);
     let best = null;
+    let bestDist = Infinity;
 
     for (const monster of monsters) {
         if (!monster.active || monster.dead) continue;
         // Aim at torso height — skinned mesh raycasts are unreliable.
-        const torso = monster.container.position.clone();
-        torso.y += 1.1;
-        const toTarget = torso.clone().sub(camera.position);
+        torsoPoint.copy(monster.container.position);
+        torsoPoint.y += 1.1;
+        toTarget.copy(torsoPoint).sub(camera.position);
         const dist = toTarget.length();
         if (dist > LASER_RANGE || dist < 0.4) continue;
         toTarget.multiplyScalar(1 / dist);
-        if (facing.dot(toTarget) < 0.9) continue;
+        if (facingDir.dot(toTarget) < 0.9) continue;
 
         // Blocked by map geometry?
         raycaster.set(camera.position, toTarget);
@@ -468,28 +793,34 @@ function shootLaser() {
         const wallHits = raycaster.intersectObjects(level.colliderList(), false);
         const blocked = wallHits.some((hit) => {
             if (!hit.face) return true;
-            const normal = hit.face.normal.clone()
+            hitPoint.copy(hit.face.normal)
                 .transformDirection(hit.object.matrixWorld)
                 .normalize();
-            return Math.abs(normal.y) < 0.55;
+            return Math.abs(hitPoint.y) < 0.55;
         });
         if (blocked) continue;
 
-        if (!best || dist < best.dist) best = { monster, dist, point: torso };
+        if (dist < bestDist) {
+            bestDist = dist;
+            best = monster;
+            hitPoint.copy(torsoPoint);
+        }
     }
 
     let end;
     if (best) {
-        end = best.point;
-        damageMonster(best.monster, LASER_DAMAGE);
+        end = hitPoint;
+        damageMonster(best, LASER_DAMAGE);
         audio.hit();
     } else {
         raycaster.setFromCamera(screenCentre, camera);
         raycaster.far = LASER_RANGE;
         const wallHits = raycaster.intersectObjects(level.colliderList(), false);
-        end = wallHits.length
-            ? wallHits[0].point.clone()
-            : camera.position.clone().addScaledVector(facing, LASER_RANGE);
+        if (wallHits.length) {
+            end = wallHits[0].point;
+        } else {
+            end = hitPoint.copy(camera.position).addScaledVector(facingDir, LASER_RANGE);
+        }
     }
 
     showLaserBeam(gun, muzzleWorld, end);
@@ -659,14 +990,14 @@ function updatePlayer(dt) {
         player.bob += dt * 1.6;
     }
 
-    // Keep feet on the mesh floor; only teleport-unstick when truly embedded.
+    // Keep feet on the mesh floor; unstick less often on mobile lite collision.
     if (moving) {
         level.snapToGround(player.position);
-        if ((state.frameCount & 7) === 0) {
+        const unstickMask = state.collisionLite ? 15 : 7;
+        if ((state.frameCount & unstickMask) === 0) {
             level.freeIfStuck(player.position, 0.34);
         }
-    } else if ((state.frameCount & 15) === 0) {
-        // Idle soft depenetration if standing slightly inside a wall.
+    } else if (!state.collisionLite && (state.frameCount & 15) === 0) {
         level.depenetrate(
             player.position,
             0.34,
@@ -674,7 +1005,8 @@ function updatePlayer(dt) {
         );
     }
 
-    if ((state.frameCount & 1) === 0) {
+    const streamMask = state.collisionLite ? 3 : 1;
+    if ((state.frameCount & streamMask) === 0) {
         level.updateStreaming(player.position.x, player.position.z);
     }
 
@@ -703,7 +1035,6 @@ function updateMonsters(dt, elapsed) {
     if (!state.monstersReleased) return;
 
     const playerPos = player.position;
-    const patrol = level.patrolLoop;
 
     for (const monster of monsters) {
         if (!monster.active || monster.dead || state.monstersHidden) {
@@ -720,53 +1051,62 @@ function updateMonsters(dt, elapsed) {
             continue;
         }
 
-        const visible = level.hasLineOfSight(pos.x, pos.z, playerPos.x, playerPos.z);
-        const sight = monster.profile.sight * (player.flashlightOn ? 1.7 : 1);
-        const hunting = visible && distance < sight;
+        // Always attack the player. Line-of-sight fails constantly in this office,
+        // so requiring it left monsters stuck on dead patrol routes.
+        monster.mode = 'chase';
+        const speed = monster.profile.chase;
+        const targetX = playerPos.x;
+        const targetZ = playerPos.z;
 
-        if (hunting) monster.mode = 'chase';
-        else if (monster.mode === 'chase' && distance > sight * 1.6) monster.mode = 'patrol';
+        const beforeX = pos.x;
+        const beforeZ = pos.z;
+        steer(monster, targetX, targetZ, speed, dt);
+        const moved = Math.hypot(pos.x - beforeX, pos.z - beforeZ);
 
-        const chasing = monster.mode === 'chase';
-        const speed = chasing ? monster.profile.chase : monster.profile.speed;
-
-        let targetX;
-        let targetZ;
-        if (chasing) {
-            targetX = playerPos.x;
-            targetZ = playerPos.z;
+        if (moved < speed * dt * 0.18) {
+            monster.stuckTimer += dt;
+            // Soft unstick toward the player when wedged on props / corners.
+            if (monster.stuckTimer > 0.35) {
+                level.unstickGround(pos, 0.3, targetX, targetZ);
+                monster.sidestep *= -1;
+            }
+            // Hard hop if still jammed — prevents forever-stuck on desks/walls.
+            if (monster.stuckTimer > 0.9) {
+                level.hopToward(pos, targetX, targetZ, 0.3, 1.8 + Math.random());
+                monster.stuckTimer = 0.2;
+            }
         } else {
-            const waypoint = patrol[monster.waypoint % patrol.length];
-            targetX = waypoint.x;
-            targetZ = waypoint.z;
-            if (Math.hypot(targetX - pos.x, targetZ - pos.z) < 1.2) {
-                monster.waypoint = (monster.waypoint + 1) % patrol.length;
+            monster.stuckTimer = Math.max(0, monster.stuckTimer - dt * 2.5);
+            // Keep gently clearing shallow overlaps even while moving.
+            if ((state.frameCount & 7) === 0) {
+                level.depenetrate(pos, 0.3, pos.y + 1.0);
             }
         }
-
-        steer(monster, targetX, targetZ, speed, dt);
 
         const desiredYaw = Math.atan2(targetX - pos.x, targetZ - pos.z);
         let delta = desiredYaw - monster.container.rotation.y;
         while (delta > Math.PI) delta -= Math.PI * 2;
         while (delta < -Math.PI) delta += Math.PI * 2;
-        monster.container.rotation.y += delta * Math.min(1, dt * 5);
+        monster.container.rotation.y += delta * Math.min(1, dt * 7);
 
         monster.phase += dt * speed * 3.4;
-        monster.rig.update(dt);
-        monster.rig.setLocomotion(monster.phase, chasing ? 1.45 : 1.0);
-        monster.container.visible = distance < CHARACTER_DRAW_DISTANCE;
+        const onScreen = distance < state.characterDraw;
+        monster.container.visible = onScreen;
+        if (onScreen) {
+            monster.rig.update(dt);
+            monster.rig.setLocomotion(monster.phase, 1.55);
+        }
 
-        if (distance < 6.5 && visible) {
-            player.fear = Math.min(100, player.fear + (chasing ? 34 : 16) * dt);
+        if (distance < 10) {
+            player.fear = Math.min(100, player.fear + 28 * dt);
             monster.growlTimer -= dt;
             if (monster.growlTimer <= 0) {
                 audio.growl();
-                monster.growlTimer = 4 + Math.random() * 6;
+                monster.growlTimer = 3 + Math.random() * 4;
             }
         }
 
-        if (distance < 1.35 && player.hurtCooldown <= 0) {
+        if (distance < 1.5 && player.hurtCooldown <= 0) {
             player.health -= 24;
             player.fear = 100;
             player.hurtCooldown = 1.1;
@@ -784,21 +1124,36 @@ function steer(monster, targetX, targetZ, speed, dt) {
     const dx = targetX - pos.x;
     const dz = targetZ - pos.z;
     const distance = Math.hypot(dx, dz) || 1;
-    let stepX = (dx / distance) * speed * dt;
-    let stepZ = (dz / distance) * speed * dt;
+    const stepX = (dx / distance) * speed * dt;
+    const stepZ = (dz / distance) * speed * dt;
+    // Slimmer capsule so desks/door frames don't snag as easily.
+    const radius = 0.28;
+    const opts = {
+        eyeHeight: 1.0,
+        fromEye: false,
+        floorsOnly: true,
+        alwaysDepenetrate: true
+    };
 
-    // Same swept resolver as the player (floor-space, not eye-space).
     const beforeX = pos.x;
     const beforeZ = pos.z;
-    level.resolveMovement(pos, stepX, stepZ, 0.42, { eyeHeight: 1.0, fromEye: false });
+    level.resolveMovement(pos, stepX, stepZ, radius, opts);
 
-    // If fully blocked toward the goal, try a side-step so AI doesn't freeze in corners.
-    if (Math.hypot(pos.x - beforeX, pos.z - beforeZ) < 0.001) {
-        const side = Math.sin(monster.phase) >= 0 ? 1 : -1;
-        level.resolveMovement(pos, -stepZ * side * 0.7, stepX * side * 0.7, 0.42, {
-            eyeHeight: 1.0,
-            fromEye: false
-        });
+    // Wall-follow: try many angles so monsters slide around objects toward you.
+    if (Math.hypot(pos.x - beforeX, pos.z - beforeZ) < speed * dt * 0.2) {
+        const side = monster.sidestep || 1;
+        const heading = Math.atan2(dx, dz);
+        const angles = [0.35, -0.35, 0.7, -0.7, 1.1, -1.1, 1.6, -1.6, Math.PI * 0.5, -Math.PI * 0.5]
+            .map((a) => a * side);
+        for (const offset of angles) {
+            const ang = heading + offset;
+            const sx = Math.sin(ang) * speed * dt * 1.05;
+            const sz = Math.cos(ang) * speed * dt * 1.05;
+            const bx = pos.x;
+            const bz = pos.z;
+            level.resolveMovement(pos, sx, sz, radius, opts);
+            if (Math.hypot(pos.x - bx, pos.z - bz) > 0.012) break;
+        }
     }
 }
 
@@ -829,10 +1184,11 @@ function updateInteractPrompt() {
     const hits = raycaster.intersectObjects(level.interactables, true);
     if (hits.length > 0) {
         const type = hits[0].object.userData.type;
-        const label = type === 'key' ? 'Take the office key  [E]'
-            : type === 'battery' ? 'Take battery  [E]'
-                : type === 'mapDoor' ? (hits[0].object.userData.door?.open ? 'Door open' : 'Open door  [E]')
-                    : player.hasKey ? 'Unlock the door  [E]' : 'Locked  [E]';
+        const keyHint = state.isMobile ? '[USE]' : '[E]';
+        const label = type === 'key' ? `Take the office key  ${keyHint}`
+            : type === 'battery' ? `Take battery  ${keyHint}`
+                : type === 'mapDoor' ? (hits[0].object.userData.door?.open ? 'Door open' : `Open door  ${keyHint}`)
+                    : player.hasKey ? `Unlock the door  ${keyHint}` : `Locked  ${keyHint}`;
         ui['interact-prompt'].textContent = label;
         ui['interact-prompt'].style.opacity = '1';
     } else {
@@ -850,7 +1206,10 @@ function updateUI() {
 function die(cause) {
     state.dead = true;
     audio.pauseMusic();
-    document.exitPointerLock();
+    touchControls?.hide();
+    releasePerformanceMode(perfHandles);
+    perfHandles = null;
+    document.exitPointerLock?.();
     document.getElementById('death-cause').textContent = cause + ' found you.';
     ui['death-screen'].style.display = 'flex';
 }
@@ -859,7 +1218,10 @@ function completeChapter() {
     state.complete = true;
     audio.pauseMusic();
     audio.unlock();
-    document.exitPointerLock();
+    touchControls?.hide();
+    releasePerformanceMode(perfHandles);
+    perfHandles = null;
+    document.exitPointerLock?.();
     setTimeout(() => { ui['chapter-end'].style.display = 'flex'; }, 900);
 }
 
@@ -875,9 +1237,11 @@ function frame() {
         if (!state.monstersReleased && state.playTime >= MONSTER_REVEAL_DELAY) {
             releaseMonsters();
         }
+        touchControls?.tick(dt);
         updatePlayer(dt);
-        // Monster AI / skinning every other frame.
-        if ((state.frameCount & 1) === 0) updateMonsters(dt * 2, elapsed);
+        // Throttle monster AI by graphics preset (low = every 3rd frame).
+        const aiEvery = Math.max(1, state.monsterAiEvery | 0);
+        if (state.frameCount % aiEvery === 0) updateMonsters(dt * aiEvery, elapsed);
         if ((state.frameCount & 3) === 0) updateInteractPrompt();
         updateAtmosphere(dt);
         if ((state.frameCount & 3) === 0) updateUI();
@@ -901,6 +1265,21 @@ function frame() {
     }
 
     renderer.render(scene, camera);
+
+    if (state.perfEnabled) {
+        state.perfFrames += 1;
+        const now = performance.now();
+        if (now - state.perfLast >= 500) {
+            state.perfFps = Math.round((state.perfFrames * 1000) / (now - state.perfLast));
+            state.perfFrames = 0;
+            state.perfLast = now;
+            ui['perf-hud'].textContent =
+                `FPS ${state.perfFps}\n` +
+                `draw ${renderer.info.render.calls}\n` +
+                `tris ${renderer.info.render.triangles}\n` +
+                `geoms ${renderer.info.memory.geometries}`;
+        }
+    }
 }
 
 window.addEventListener('load', () => {

@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
+import { mergeStaticByMaterial } from './merge.js';
 
 // Characters are normalised to a known height. The building is normalised by
 // door height so rooms feel human-scale rather than Sketchfab-unit scale.
@@ -120,6 +122,7 @@ function normaliseProp(gltf, spec) {
     content.position.set(-centre.x * scale, -bounds.min.y * scale, -centre.z * scale);
 
     prepareMeshes(oriented, { castShadow: false, cheapTextures: true });
+    mergeStaticByMaterial(oriented, { skip: /$^/ }); // merge all static gun pieces
     oriented.updateMatrixWorld(true);
     return { oriented, nativeHeight: size.y, scale };
 }
@@ -148,6 +151,8 @@ function normaliseMap(gltf, spec) {
     );
 
     prepareMeshes(oriented, { castShadow: false, cheapTextures: true });
+    // Collapse same-material static pieces into fewer draw calls.
+    mergeStaticByMaterial(oriented);
     oriented.updateMatrixWorld(true);
 
     const finalBounds = new THREE.Box3().setFromObject(oriented);
@@ -160,46 +165,79 @@ function normaliseMap(gltf, spec) {
     };
 }
 
-export async function loadModels(onProgress) {
+function createLoader() {
     const loader = new GLTFLoader();
+    const draco = new DRACOLoader();
+    // Copied from three/examples/jsm/libs/draco into public/draco/.
+    draco.setDecoderPath('/draco/gltf/');
+    loader.setDRACOLoader(draco);
+    return loader;
+}
+
+function storeModel(name, kind, payload) {
+    assets.models[name] = { ...payload, kind };
+}
+
+async function loadOneModel(loader, name, spec) {
+    const gltf = await loader.loadAsync(spec.url);
+    if (spec.kind === 'map') {
+        const result = normaliseMap(gltf, spec);
+        storeModel(name, 'map', {
+            prototype: result.oriented,
+            animations: [],
+            triangles: countTriangles(gltf.scene),
+            nativeHeight: Math.round(result.nativeHeight * 1000) / 1000,
+            scale: Math.round(result.scale * 10000) / 10000,
+            bounds: result.bounds,
+            size: result.size
+        });
+        return;
+    }
+    if (spec.kind === 'prop') {
+        const { oriented, nativeHeight, scale } = normaliseProp(gltf, spec);
+        storeModel(name, 'prop', {
+            prototype: oriented,
+            animations: [],
+            triangles: countTriangles(gltf.scene),
+            nativeHeight: Math.round(nativeHeight * 1000) / 1000,
+            scale: Math.round(scale * 10000) / 10000
+        });
+        return;
+    }
+    const { oriented, nativeHeight, scale } = normaliseCharacter(gltf, spec);
+    storeModel(name, 'character', {
+        prototype: oriented,
+        animations: gltf.animations || [],
+        triangles: countTriangles(gltf.scene),
+        nativeHeight: Math.round(nativeHeight * 1000) / 1000,
+        scale: Math.round(scale * 10000) / 10000
+    });
+}
+
+/**
+ * @param {(fraction: number, name: string) => void} onProgress
+ * @param {{ sequential?: boolean, timeoutMs?: number }} [options]
+ */
+export async function loadModels(onProgress, options = {}) {
+    const sequential = Boolean(options.sequential);
+    const timeoutMs = options.timeoutMs ?? 60000;
+    const loader = createLoader();
     const entries = Object.entries(MODEL_SOURCES);
     let done = 0;
 
-    await Promise.all(entries.map(async ([name, spec]) => {
+    const runOne = async ([name, spec]) => {
+        onProgress?.(done / entries.length, name);
         try {
-            const gltf = await loader.loadAsync(spec.url);
-            if (spec.kind === 'map') {
-                const result = normaliseMap(gltf, spec);
-                assets.models[name] = {
-                    prototype: result.oriented,
-                    animations: [],
-                    triangles: countTriangles(gltf.scene),
-                    nativeHeight: Math.round(result.nativeHeight * 1000) / 1000,
-                    scale: Math.round(result.scale * 10000) / 10000,
-                    bounds: result.bounds,
-                    size: result.size,
-                    kind: 'map'
-                };
-            } else if (spec.kind === 'prop') {
-                const { oriented, nativeHeight, scale } = normaliseProp(gltf, spec);
-                assets.models[name] = {
-                    prototype: oriented,
-                    animations: [],
-                    triangles: countTriangles(gltf.scene),
-                    nativeHeight: Math.round(nativeHeight * 1000) / 1000,
-                    scale: Math.round(scale * 10000) / 10000,
-                    kind: 'prop'
-                };
+            const task = loadOneModel(loader, name, spec);
+            if (timeoutMs > 0) {
+                await Promise.race([
+                    task,
+                    new Promise((_, reject) => {
+                        setTimeout(() => reject(new Error(`timeout loading ${name}`)), timeoutMs);
+                    })
+                ]);
             } else {
-                const { oriented, nativeHeight, scale } = normaliseCharacter(gltf, spec);
-                assets.models[name] = {
-                    prototype: oriented,
-                    animations: gltf.animations || [],
-                    triangles: countTriangles(gltf.scene),
-                    nativeHeight: Math.round(nativeHeight * 1000) / 1000,
-                    scale: Math.round(scale * 10000) / 10000,
-                    kind: 'character'
-                };
+                await task;
             }
         } catch (error) {
             assets.failures.push(`${name}: ${error.message}`);
@@ -208,7 +246,13 @@ export async function loadModels(onProgress) {
             done += 1;
             onProgress?.(done / entries.length, name);
         }
-    }));
+    };
+
+    if (sequential) {
+        for (const entry of entries) await runOne(entry);
+    } else {
+        await Promise.all(entries.map(runOne));
+    }
 
     assets.loaded = true;
     return assets;
