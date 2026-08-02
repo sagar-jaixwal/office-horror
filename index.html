@@ -4,219 +4,173 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>The Last Shift - Horror Game</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%23000'/><circle cx='8' cy='8' r='3' fill='%23d93a34'/></svg>">
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
             overflow: hidden;
             background: #000;
             font-family: 'Courier New', monospace;
+            cursor: default;
         }
-        
+
         #game-container {
             position: relative;
             width: 100vw;
             height: 100vh;
         }
-        
+
         #canvas-container {
             width: 100%;
             height: 100%;
         }
-        
+
         #ui-overlay {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            inset: 0;
             pointer-events: none;
             z-index: 100;
         }
-        
+
         #crosshair {
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 4px;
-            height: 4px;
-            background: rgba(255, 255, 255, 0.5);
+            width: 5px;
+            height: 5px;
+            border: 1px solid rgba(255, 255, 255, 0.55);
             border-radius: 50%;
+            box-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
         }
-        
-        #health-bar {
+
+        .meter {
             position: absolute;
-            bottom: 30px;
-            left: 30px;
-            width: 200px;
-            height: 20px;
-            background: rgba(0, 0, 0, 0.7);
-            border: 2px solid #333;
-            border-radius: 4px;
-        }
-        
-        #health-fill {
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, #ff3333, #ff6666);
+            width: 190px;
+            height: 14px;
+            background: rgba(0, 0, 0, 0.62);
+            border: 1px solid #3a3a3a;
             border-radius: 2px;
-            transition: width 0.3s;
+            overflow: hidden;
         }
-        
-        #battery-bar {
-            position: absolute;
-            bottom: 30px;
-            right: 30px;
-            width: 150px;
-            height: 20px;
-            background: rgba(0, 0, 0, 0.7);
-            border: 2px solid #333;
-            border-radius: 4px;
-        }
-        
-        #battery-fill {
-            width: 100%;
+
+        .meter > div {
             height: 100%;
-            background: linear-gradient(90deg, #33ff33, #66ff66);
-            border-radius: 2px;
-            transition: width 0.3s;
+            transition: width 0.18s linear;
         }
-        
-        #battery-icon {
+
+        .meter-label {
             position: absolute;
-            bottom: 55px;
-            right: 30px;
-            color: #fff;
+            color: #9aa0a6;
+            font-size: 11px;
+            letter-spacing: 2px;
+            text-shadow: 0 2px 4px #000;
+        }
+
+        #health-bar { bottom: 34px; left: 30px; }
+        #health-fill { width: 100%; background: linear-gradient(90deg, #8f1f1f, #e04a4a); }
+        #health-label { bottom: 52px; left: 30px; }
+
+        #stamina-bar { bottom: 34px; left: 236px; width: 140px; }
+        #stamina-fill { width: 100%; background: linear-gradient(90deg, #6c6320, #d8c65a); }
+        #stamina-label { bottom: 52px; left: 236px; }
+
+        #battery-bar { bottom: 34px; right: 30px; }
+        #battery-fill { width: 100%; background: linear-gradient(90deg, #1f7a2e, #5ce07a); }
+        #battery-label { bottom: 52px; right: 30px; }
+
+        #battery-count {
+            position: absolute;
+            bottom: 32px;
+            right: 232px;
+            color: #cfd4d8;
             font-size: 14px;
-            text-shadow: 2px 2px 4px #000;
+            text-shadow: 0 2px 4px #000;
         }
-        
+
         #objective-text {
             position: absolute;
-            top: 30px;
+            top: 28px;
             left: 30px;
-            color: #fff;
-            font-size: 16px;
-            text-shadow: 2px 2px 4px #000;
-            max-width: 400px;
+            color: #d6dade;
+            font-size: 15px;
+            letter-spacing: 0.4px;
+            text-shadow: 0 2px 6px #000;
+            max-width: 460px;
+            line-height: 1.5;
         }
-        
-        #heartbeat-overlay {
+
+        #monster-toggle {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: radial-gradient(circle, transparent 50%, rgba(255, 0, 0, 0.3) 100%);
-            opacity: 0;
-            transition: opacity 0.5s;
-            pointer-events: none;
-        }
-        
-        #start-screen {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: #000;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            z-index: 200;
-            pointer-events: all;
-        }
-        
-        #start-screen h1 {
-            color: #ff3333;
-            font-size: 48px;
-            margin-bottom: 20px;
-            text-shadow: 0 0 20px #ff0000;
-            animation: pulse 2s infinite;
-        }
-        
-        #start-screen p {
-            color: #ccc;
-            font-size: 18px;
-            margin-bottom: 40px;
-            max-width: 600px;
-            text-align: center;
-            line-height: 1.6;
-        }
-        
-        #start-button {
-            padding: 15px 40px;
-            font-size: 20px;
-            background: #ff3333;
-            color: #fff;
-            border: none;
-            border-radius: 5px;
+            top: 24px;
+            right: 28px;
+            z-index: 50;
+            padding: 10px 18px;
+            font-size: 13px;
+            letter-spacing: 1.5px;
+            background: rgba(0, 0, 0, 0.55);
+            color: #e6e9ec;
+            border: 1px solid #8a3030;
+            border-radius: 2px;
             cursor: pointer;
-            transition: all 0.3s;
+            pointer-events: all;
             font-family: 'Courier New', monospace;
+            text-transform: uppercase;
         }
-        
-        #start-button:hover {
-            background: #ff6666;
-            transform: scale(1.05);
+
+        #monster-toggle:hover {
+            background: #d93a34;
+            color: #0a0a0a;
         }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.7; }
+
+        #monster-toggle.hidden-mode {
+            border-color: #3d6a45;
+            color: #b7d4be;
         }
-        
-        #controls-hint {
+
+        #interact-prompt {
             position: absolute;
-            bottom: 80px;
+            top: 56%;
             left: 50%;
             transform: translateX(-50%);
-            color: #888;
-            font-size: 14px;
-            text-align: center;
+            color: #e8e2d2;
+            font-size: 15px;
+            letter-spacing: 1px;
+            text-shadow: 0 2px 6px #000;
+            opacity: 0;
+            transition: opacity 0.2s;
         }
-        
+
+        #heartbeat-overlay {
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle, transparent 42%, rgba(120, 0, 0, 0.55) 100%);
+            opacity: 0;
+            transition: opacity 0.25s;
+        }
+
+        #damage-flash {
+            position: absolute;
+            inset: 0;
+            background: rgba(150, 10, 10, 0.45);
+            opacity: 0;
+            transition: opacity 0.25s;
+        }
+
         .vignette {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: radial-gradient(circle, transparent 60%, rgba(0, 0, 0, 0.8) 100%);
-            pointer-events: none;
+            inset: 0;
+            background: radial-gradient(circle, transparent 52%, rgba(0, 0, 0, 0.82) 100%);
         }
-        
-        #jump-scare {
+
+        .screen {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: #000;
-            display: none;
-            justify-content: center;
-            align-items: center;
-            z-index: 300;
-            pointer-events: all;
-        }
-        
-        #jump-scare img {
-            max-width: 100%;
-            max-height: 100%;
-        }
-        
-        #chapter-end {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            inset: 0;
             background: #000;
             display: none;
             flex-direction: column;
@@ -224,54 +178,146 @@
             align-items: center;
             z-index: 300;
             pointer-events: all;
-        }
-        
-        #chapter-end h2 {
-            color: #ff3333;
-            font-size: 36px;
-            margin-bottom: 20px;
-        }
-        
-        #chapter-end p {
-            color: #ccc;
-            font-size: 18px;
-            max-width: 600px;
             text-align: center;
+            padding: 40px;
+        }
+
+        #start-screen {
+            display: flex;
+            background: radial-gradient(circle at 50% 40%, #16090a 0%, #000 70%);
+            z-index: 200;
+        }
+
+        .screen h1 {
+            color: #d93a34;
+            font-size: 52px;
+            letter-spacing: 6px;
+            margin-bottom: 14px;
+            text-shadow: 0 0 26px rgba(217, 58, 52, 0.55);
+            animation: pulse 3.2s infinite;
+        }
+
+        .screen h2 {
+            color: #d93a34;
+            font-size: 32px;
+            letter-spacing: 3px;
+            margin-bottom: 18px;
+        }
+
+        .screen p {
+            color: #9fa5ab;
+            font-size: 16px;
+            max-width: 620px;
             line-height: 1.8;
+            margin-bottom: 28px;
+        }
+
+        .controls-grid {
+            display: grid;
+            grid-template-columns: repeat(2, auto);
+            gap: 6px 28px;
+            color: #6e747a;
+            font-size: 13px;
+            margin-bottom: 32px;
+        }
+
+        .controls-grid span:nth-child(odd) { color: #b9bfc5; text-align: right; }
+        .controls-grid span:nth-child(even) { text-align: left; }
+
+        button {
+            padding: 14px 42px;
+            font-size: 17px;
+            letter-spacing: 3px;
+            background: transparent;
+            color: #e6e9ec;
+            border: 1px solid #d93a34;
+            border-radius: 2px;
+            cursor: pointer;
+            transition: background 0.25s, color 0.25s;
+            font-family: 'Courier New', monospace;
+        }
+
+        button:hover:not(:disabled) {
+            background: #d93a34;
+            color: #0a0a0a;
+        }
+
+        button:disabled {
+            border-color: #4a4a4a;
+            color: #6e747a;
+            cursor: progress;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.72; }
+        }
+
+        #pause-screen {
+            background: rgba(0, 0, 0, 0.82);
         }
     </style>
 </head>
 <body>
     <div id="game-container">
         <div id="canvas-container"></div>
-        
+
         <div id="ui-overlay">
             <div id="crosshair"></div>
-            <div id="health-bar"><div id="health-fill"></div></div>
-            <div id="battery-icon">🔋 Flashlight</div>
-            <div id="battery-bar"><div id="battery-fill"></div></div>
-            <div id="objective-text">Objective: Find the emergency stair key and escape to Floor 11</div>
-            <div id="controls-hint">WASD: Move | Mouse: Look | Click: Flashlight | Shift: Run | E: Interact</div>
+
+            <div id="health-label" class="meter-label">VITALS</div>
+            <div id="health-bar" class="meter"><div id="health-fill"></div></div>
+
+            <div id="stamina-label" class="meter-label">BREATH</div>
+            <div id="stamina-bar" class="meter"><div id="stamina-fill"></div></div>
+
+            <div id="battery-label" class="meter-label">TORCH</div>
+            <div id="battery-bar" class="meter"><div id="battery-fill"></div></div>
+            <div id="battery-count">x0</div>
+
+            <div id="objective-text">Objective: Find the emergency stair key</div>
+            <button id="monster-toggle" type="button">Hide Monsters</button>
+            <div id="interact-prompt"></div>
+
             <div class="vignette"></div>
             <div id="heartbeat-overlay"></div>
+            <div id="damage-flash"></div>
         </div>
-        
-        <div id="start-screen">
+
+        <div id="start-screen" class="screen">
             <h1>THE LAST SHIFT</h1>
-            <p>You are Sagar, a software engineer trapped in a haunted office building.<br>
-            The power is out. Something evil lurks in the darkness.<br>
-            Find the emergency stair key and escape... if you can.</p>
-            <button id="start-button">START GAME</button>
+            <p>Randolph's office. The lights failed hours ago.<br>
+            Something is hunting through these rooms.<br>
+            Find the key and get out alive.</p>
+            <div class="controls-grid">
+                <span>W A S D</span><span>Move</span>
+                <span>Mouse</span><span>Look</span>
+                <span>Shift</span><span>Sprint</span>
+                <span>Left / Right click / Space</span><span>Laser gun</span>
+                <span>F</span><span>Flashlight</span>
+                <span>E</span><span>Open door / Interact</span>
+                <span>H</span><span>Hide / show monsters</span>
+                <span>Esc</span><span>Release cursor</span>
+            </div>
+            <button id="start-button" disabled>LOADING 0%</button>
         </div>
-        
-        <div id="jump-scare"></div>
-        
-        <div id="chapter-end">
+
+        <div id="pause-screen" class="screen">
+            <h2>PAUSED</h2>
+            <p>Click anywhere to go back in.</p>
+        </div>
+
+        <div id="death-screen" class="screen">
+            <h2>YOU DIED</h2>
+            <p id="death-cause"></p>
+            <button id="retry-button">TRY AGAIN</button>
+        </div>
+
+        <div id="chapter-end" class="screen">
             <h2>CHAPTER 1 COMPLETE</h2>
-            <p>You reach the emergency staircase.<br>
-            As you step onto the stairs, the fire door slams shut behind you.<br>
-            A whisper echoes near your ear:<br><br>
-            <strong style="color: #ff3333;">"You're not leaving this building alive..."</strong></p>
+            <p>The deadbolt gives and the stairwell swallows you whole.<br>
+            Behind you the fire door slams hard enough to shake the frame.<br><br>
+            <strong style="color: #d93a34;">"You're not leaving this building alive."</strong></p>
         </div>
     </div>
 

@@ -1,460 +1,405 @@
 import * as THREE from 'three';
+import { Level, mapInfo } from './src/level.js';
+import { LightingRig, configureRenderer, configureAtmosphere } from './src/lighting.js';
+import { createMonster } from './src/characters.js';
+import { loadModels, assets } from './src/models.js';
+import { createLaserGun, updateGun, showLaserBeam } from './src/gun.js';
+import { Audio } from './src/audio.js';
 
-// Game State
-let gameStarted = false;
-let flashlightOn = false;
-let batteryLevel = 100;
-let health = 100;
-let fearLevel = 0;
-let hasKey = false;
-let chapterComplete = false;
+const EYE_HEIGHT = 1.68;
+const WALK_SPEED = 2.6;
+const RUN_SPEED = 4.9;
+const BATTERY_DRAIN = 1.15;
+const CHARACTER_DRAW_DISTANCE = 12;
+const MONSTER_REVEAL_DELAY = 30;
+const LASER_RANGE = 22;
+const LASER_DAMAGE = 34;
+const LASER_COOLDOWN = 0.28;
 
-// Camera and Player
-let camera, scene, renderer;
-let playerVelocity = new THREE.Vector3();
-let playerDirection = new THREE.Vector3();
-let moveForward = false;
-let moveBackward = false;
-let moveLeft = false;
-let moveRight = false;
-let isRunning = false;
-let canMove = true;
+let renderer, scene, camera, level, lighting, gun;
+const audio = new Audio();
+const timer = new THREE.Timer();
+const raycaster = new THREE.Raycaster();
+const screenCentre = new THREE.Vector2(0, 0);
+const muzzleWorld = new THREE.Vector3();
+const hitPoint = new THREE.Vector3();
 
-// Ghosts
-const ghosts = [];
-const ghostPatrolPoints = [];
+const input = { forward: false, back: false, left: false, right: false, run: false };
 
-// Objects
-const interactableObjects = [];
-let emergencyKey = null;
+const player = {
+    position: new THREE.Vector3(0, EYE_HEIGHT, 0),
+    yaw: 0,
+    pitch: 0,
+    health: 100,
+    fear: 0,
+    stamina: 100,
+    bob: 0,
+    battery: 100,
+    flashlightOn: false,
+    hasKey: false,
+    spareBatteries: 0,
+    hurtCooldown: 0
+};
 
-// Audio Context
-let audioContext;
-let heartbeatSound = null;
+const state = {
+    started: false,
+    paused: false,
+    dead: false,
+    complete: false,
+    heartTimer: 0,
+    elapsed: 0,
+    playTime: 0,
+    monstersReleased: false,
+    monstersHidden: false,
+    frameCount: 0
+};
+const monsters = [];
+const ui = {};
 
-// Initialize the game
-function init() {
-    // Scene
+function cacheUI() {
+    for (const id of [
+        'health-fill', 'battery-fill', 'stamina-fill', 'objective-text', 'heartbeat-overlay',
+        'damage-flash', 'start-screen', 'chapter-end', 'death-screen', 'pause-screen',
+        'interact-prompt', 'battery-count', 'crosshair', 'start-button', 'monster-toggle'
+    ]) {
+        ui[id] = document.getElementById(id);
+    }
+}
+
+async function init() {
+    cacheUI();
+
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x050505);
-    scene.fog = new THREE.FogExp2(0x050505, 0.03);
+    configureAtmosphere(scene);
+    timer.connect(document);
 
-    // Camera
-    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 1.7, 5);
+    camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.15, 24);
+    camera.rotation.order = 'YXZ';
+    scene.add(camera);
 
-    // Renderer
-    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer = new THREE.WebGLRenderer({
+        antialias: false,
+        powerPreference: 'high-performance',
+        stencil: false,
+        depth: true
+    });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    configureRenderer(renderer);
     document.getElementById('canvas-container').appendChild(renderer.domElement);
 
-    // Lighting
-    createLighting();
+    await loadModels((fraction) => {
+        ui['start-button'].textContent = `LOADING ${Math.round(fraction * 100)}%`;
+    });
 
-    // Build Office Environment
-    buildOffice();
+    level = new Level(scene).build();
+    // spawn.y is the floor; player.position.y is eye height above that floor.
+    player.position.set(level.spawn.x, level.spawn.y + EYE_HEIGHT, level.spawn.z);
+    player.yaw = level.spawn.heading;
+    level.freeIfStuck(player.position);
+    camera.position.copy(player.position);
 
-    // Create Ghosts
-    createGhosts();
+    lighting = new LightingRig(scene, camera).build(level);
+    gun = createLaserGun(camera);
+    scene.add(gun.beam);
 
-    // Event Listeners
+    prepareMonsters();
     setupEventListeners();
+    updateUI();
+    exposeDebugHooks();
 
-    // Start animation loop
-    animate();
+    ui['start-button'].textContent = 'ENTER THE OFFICE';
+    ui['start-button'].disabled = false;
+
+    renderer.setAnimationLoop(frame);
 }
 
-function createLighting() {
-    // Ambient light (very dim - emergency lighting)
-    const ambientLight = new THREE.AmbientLight(0x330000, 0.3);
-    scene.add(ambientLight);
-
-    // Emergency red lights
-    for (let i = 0; i < 10; i++) {
-        const emergencyLight = new THREE.PointLight(0xff0000, 0.5, 15);
-        emergencyLight.position.set(
-            Math.random() * 40 - 20,
-            3 + Math.random() * 2,
-            Math.random() * 40 - 20
-        );
-        emergencyLight.castShadow = true;
-        
-        // Flicker effect
-        setInterval(() => {
-            emergencyLight.intensity = Math.random() > 0.3 ? 0.5 : 0.1;
-        }, 100 + Math.random() * 200);
-        
-        scene.add(emergencyLight);
-    }
-
-    // Flashlight (attached to camera)
-    const flashlight = new THREE.SpotLight(0xffffff, 0);
-    flashlight.position.set(0, 0, 0);
-    flashlight.angle = Math.PI / 6;
-    flashlight.penumbra = 0.3;
-    flashlight.distance = 30;
-    flashlight.castShadow = true;
-    camera.add(flashlight);
-    camera.flashlight = flashlight;
-    scene.add(camera);
+function exposeDebugHooks() {
+    if (!import.meta.env?.DEV) return;
+    window.__debug = {
+        forceResume: () => {
+            state.paused = false;
+            state.started = true;
+            ui['start-screen'].style.display = 'none';
+        },
+        releaseMonsters: () => releaseMonsters(),
+        shoot: () => shootLaser(),
+        setFlashlight: (on) => {
+            player.flashlightOn = on;
+            lighting.setFlashlight(on, player.battery / 100);
+        },
+        teleport: (x, z, yaw = player.yaw) => {
+            player.position.set(x, player.position.y, z);
+            level.snapToGround(player.position);
+            player.yaw = yaw;
+            camera.position.copy(player.position);
+        },
+        poseMonster: (index, distance) => {
+            const monster = monsters[index];
+            if (!monster) return;
+            for (const other of monsters) {
+                if (other === monster) continue;
+                other.frozen = true;
+                other.container.position.set(other.container.position.x, -20, other.container.position.z);
+            }
+            monster.container.position.set(player.position.x, 0, player.position.z - distance);
+            const floor = level.groundAt(monster.container.position.x, monster.container.position.z);
+            monster.container.position.y = floor ?? level.spawn.y;
+            monster.container.rotation.y = Math.PI;
+            monster.frozen = true;
+            monster.active = true;
+            monster.dead = false;
+            monster.container.visible = true;
+            monster.rig.root.rotation.x = 0;
+            player.yaw = 0;
+            player.pitch = 0;
+        },
+        stats: () => ({
+            map: mapInfo(level),
+            playTime: state.playTime,
+            monstersReleased: state.monstersReleased,
+            monsters: monsters.map((m) => ({
+                kind: m.kind, active: m.active, dead: m.dead, health: m.health
+            })),
+            models: Object.fromEntries(
+                Object.entries(assets.models).map(([name, entry]) => [
+                    name,
+                    `${entry.triangles} tris, scale x${entry.scale}`
+                ])
+            ),
+            modelFailures: assets.failures,
+            spawn: level.spawn,
+            floorUnderPlayer: level.groundAt(player.position.x, player.position.z),
+            playerY: player.position.y,
+            collisionMeshes: level.collisionMeshes.length,
+            activeColliders: level.activeColliders.length,
+            visibleChunks: level.renderChunks.filter((c) => c.mesh.visible).length,
+            interactables: level.interactables.length,
+            fixtures: lighting.fixtures.length,
+            drawCalls: renderer.info.render.calls,
+            triangles: renderer.info.render.triangles,
+            playerBlocked: level.isBlocked(player.position.x, player.position.z, 0.34)
+        })
+    };
 }
 
-function buildOffice() {
-    // Floor
-    const floorGeometry = new THREE.PlaneGeometry(50, 50);
-    const floorMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0x1a1a1a,
-        roughness: 0.8,
-        metalness: 0.2
-    });
-    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-    floor.rotation.x = -Math.PI / 2;
-    floor.receiveShadow = true;
-    scene.add(floor);
-
-    // Ceiling
-    const ceilingGeometry = new THREE.PlaneGeometry(50, 50);
-    const ceilingMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0x0a0a0a,
-        roughness: 0.9
-    });
-    const ceiling = new THREE.Mesh(ceilingGeometry, ceilingMaterial);
-    ceiling.rotation.x = Math.PI / 2;
-    ceiling.position.y = 4;
-    scene.add(ceiling);
-
-    // Walls
-    createWalls();
-
-    // Desks and Office Furniture
-    createDesks();
-
-    // Windows with rain effect
-    createWindows();
-
-    // Doors
-    createDoors();
-
-    // Emergency Stair Door (goal)
-    createEmergencyDoor();
-
-    // Place the key
-    placeEmergencyKey();
-}
-
-function createWalls() {
-    const wallMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0x2a2a2a,
-        roughness: 0.9
-    });
-
-    // Outer walls
-    const walls = [
-        { pos: [0, 2, -25], size: [50, 4, 1] },
-        { pos: [0, 2, 25], size: [50, 4, 1] },
-        { pos: [-25, 2, 0], size: [1, 4, 50] },
-        { pos: [25, 2, 0], size: [1, 4, 50] }
+function prepareMonsters() {
+    // Three hunters — only the first is released at 30s; the next appear after each kill.
+    const specs = [
+        { kind: 'acidMouth', waypoint: 0 },
+        { kind: 'stalker', waypoint: 2 },
+        { kind: 'ceilingCrawler', waypoint: 4 }
     ];
 
-    walls.forEach(wall => {
-        const geometry = new THREE.BoxGeometry(...wall.size);
-        const mesh = new THREE.Mesh(geometry, wallMaterial);
-        mesh.position.set(...wall.pos);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        scene.add(mesh);
-    });
+    for (const spec of specs) {
+        const rig = createMonster(spec.kind);
+        const container = new THREE.Group();
+        container.visible = false;
+        container.add(rig.root);
+        scene.add(container);
 
-    // Internal office partitions
-    const partitions = [
-        { pos: [-10, 2, 0], size: [1, 3, 20] },
-        { pos: [10, 2, 0], size: [1, 3, 20] },
-        { pos: [0, 2, -10], size: [15, 3, 1] },
-        { pos: [0, 2, 10], size: [15, 3, 1] }
-    ];
+        const monster = {
+            kind: spec.kind,
+            rig,
+            container,
+            waypoint: spec.waypoint,
+            phase: Math.random() * Math.PI * 2,
+            mode: 'patrol',
+            dropProgress: 0,
+            growlTimer: 2 + Math.random() * 4,
+            profile: { ...rig.profile, speed: Math.max(1.35, rig.profile.speed), chase: Math.max(2.6, rig.profile.chase) },
+            health: 100,
+            active: false,
+            dead: false,
+            frozen: false
+        };
 
-    partitions.forEach(partition => {
-        const geometry = new THREE.BoxGeometry(...partition.size);
-        const mesh = new THREE.Mesh(geometry, wallMaterial);
-        mesh.position.set(...partition.pos);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        scene.add(mesh);
-    });
-}
-
-function createDesks() {
-    const deskMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0x3d2817,
-        roughness: 0.7
-    });
-
-    const chairMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0x1a1a1a,
-        roughness: 0.8
-    });
-
-    // Create multiple desks
-    for (let i = 0; i < 15; i++) {
-        const x = (Math.random() - 0.5) * 40;
-        const z = (Math.random() - 0.5) * 40;
-        
-        // Desk
-        const deskGeometry = new THREE.BoxGeometry(2, 0.8, 1);
-        const desk = new THREE.Mesh(deskGeometry, deskMaterial);
-        desk.position.set(x, 0.8, z);
-        desk.castShadow = true;
-        desk.receiveShadow = true;
-        scene.add(desk);
-
-        // Computer monitor
-        const monitorGeometry = new THREE.BoxGeometry(0.6, 0.4, 0.1);
-        const monitorMaterial = new THREE.MeshStandardMaterial({ 
-            color: 0x0a0a0a,
-            emissive: Math.random() > 0.7 ? 0x111111 : 0x000000,
-            emissiveIntensity: 0.2
+        container.traverse((child) => {
+            if (child.isMesh) child.userData.monsterRef = monster;
         });
-        const monitor = new THREE.Mesh(monitorGeometry, monitorMaterial);
-        monitor.position.set(x, 1.4, z);
-        scene.add(monitor);
 
-        // Chair
-        const chairGeometry = new THREE.BoxGeometry(0.5, 0.8, 0.5);
-        const chair = new THREE.Mesh(chairGeometry, chairMaterial);
-        chair.position.set(x + 1, 0.4, z);
-        chair.castShadow = true;
-        scene.add(chair);
+        monsters.push(monster);
     }
 }
 
-function createWindows() {
-    const windowMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0x1a1a2e,
-        roughness: 0.1,
-        metalness: 0.8,
-        transparent: true,
-        opacity: 0.7
-    });
-
-    // Large windows on one side
-    for (let i = 0; i < 5; i++) {
-        const windowGeometry = new THREE.PlaneGeometry(4, 3);
-        const windowMesh = new THREE.Mesh(windowGeometry, windowMaterial);
-        windowMesh.position.set(25, 2, -15 + i * 7);
-        windowMesh.rotation.y = -Math.PI / 2;
-        scene.add(windowMesh);
-
-        // Window frame
-        const frameGeometry = new THREE.BoxGeometry(0.2, 3.2, 4.2);
-        const frameMaterial = new THREE.MeshStandardMaterial({ color: 0x1a1a1a });
-        const frame = new THREE.Mesh(frameGeometry, frameMaterial);
-        frame.position.set(25.1, 2, -15 + i * 7);
-        frame.rotation.y = -Math.PI / 2;
-        scene.add(frame);
-    }
-}
-
-function createDoors() {
-    const doorMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0x3d2817,
-        roughness: 0.8
-    });
-
-    // Several office doors
-    const doorPositions = [
-        [-25, 1.5, -5],
-        [-25, 1.5, 5],
-        [25, 1.5, -5],
-        [25, 1.5, 5]
-    ];
-
-    doorPositions.forEach(pos => {
-        const doorGeometry = new THREE.BoxGeometry(0.2, 3, 1.5);
-        const door = new THREE.Mesh(doorGeometry, doorMaterial);
-        door.position.set(...pos);
-        if (pos[0] < 0) door.rotation.y = Math.PI / 2;
-        else door.rotation.y = -Math.PI / 2;
-        door.castShadow = true;
-        scene.add(door);
-    });
-}
-
-function createEmergencyDoor() {
-    const doorMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0x8b0000,
-        roughness: 0.6,
-        emissive: 0x330000,
-        emissiveIntensity: 0.3
-    });
-
-    const doorGeometry = new THREE.BoxGeometry(0.3, 3.5, 2);
-    emergencyKey = new THREE.Mesh(doorGeometry, doorMaterial);
-    emergencyKey.position.set(-24, 1.75, 20);
-    emergencyKey.rotation.y = Math.PI / 2;
-    emergencyKey.castShadow = true;
-    emergencyKey.userData = { type: 'emergencyDoor', interactable: true };
-    scene.add(emergencyKey);
-
-    // Exit sign above door
-    const signGeometry = new THREE.BoxGeometry(1.5, 0.3, 0.1);
-    const signMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0x00ff00,
-        emissive: 0x00ff00,
-        emissiveIntensity: 0.5
-    });
-    const sign = new THREE.Mesh(signGeometry, signMaterial);
-    sign.position.set(-24, 3.5, 20);
-    sign.rotation.y = Math.PI / 2;
-    scene.add(sign);
-}
-
-function placeEmergencyKey() {
-    // Key on a desk
-    const keyGeometry = new THREE.BoxGeometry(0.3, 0.05, 0.1);
-    const keyMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0xffd700,
-        metalness: 0.9,
-        roughness: 0.2
-    });
-    const key = new THREE.Mesh(keyGeometry, keyMaterial);
-    key.position.set(10, 1.05, -10);
-    key.rotation.y = Math.PI / 4;
-    key.userData = { type: 'key', interactable: true };
-    scene.add(key);
-    interactableObjects.push(key);
-
-    // Add a glow effect
-    const keyLight = new THREE.PointLight(0xffd700, 0.5, 3);
-    keyLight.position.set(10, 1.5, -10);
-    scene.add(keyLight);
-}
-
-function createGhosts() {
-    // Ghost 1: The Broken Head
-    const ghost1Geometry = new THREE.CylinderGeometry(0.4, 0.4, 1.8, 8);
-    const ghost1Material = new THREE.MeshStandardMaterial({ 
-        color: 0x8b0000,
-        roughness: 0.9,
-        transparent: true,
-        opacity: 0.8
-    });
-    const ghost1 = new THREE.Mesh(ghost1Geometry, ghost1Material);
-    ghost1.position.set(-15, 0.9, 15);
-    ghost1.userData = { 
-        type: 'ghost', 
-        id: 1, 
-        name: 'The Broken Head',
-        speed: 0.02,
-        patrolIndex: 0
-    };
-    scene.add(ghost1);
-    ghosts.push(ghost1);
-
-    // Ghost 2: The Acid Mouth
-    const ghost2Geometry = new THREE.CapsuleGeometry(0.4, 1.5, 4, 8);
-    const ghost2Material = new THREE.MeshStandardMaterial({ 
-        color: 0x006400,
-        roughness: 0.7,
-        transparent: true,
-        opacity: 0.7
-    });
-    const ghost2 = new THREE.Mesh(ghost2Geometry, ghost2Material);
-    ghost2.position.set(15, 0.9, -15);
-    ghost2.userData = { 
-        type: 'ghost', 
-        id: 2, 
-        name: 'The Acid Mouth',
-        speed: 0.015,
-        patrolIndex: 0
-    };
-    scene.add(ghost2);
-    ghosts.push(ghost2);
-
-    // Ghost 3: The Ceiling Crawler
-    const ghost3Geometry = new THREE.SphereGeometry(0.3, 8, 8);
-    const ghost3Material = new THREE.MeshStandardMaterial({ 
-        color: 0x4b0082,
-        roughness: 0.5,
-        transparent: true,
-        opacity: 0.6,
-        emissive: 0x220033,
-        emissiveIntensity: 0.5
-    });
-    const ghost3 = new THREE.Mesh(ghost3Geometry, ghost3Material);
-    ghost3.position.set(0, 3.5, 0);
-    ghost3.userData = { 
-        type: 'ghost', 
-        id: 3, 
-        name: 'The Ceiling Crawler',
-        speed: 0.025,
-        patrolIndex: 0,
-        onCeiling: true
-    };
-    scene.add(ghost3);
-    ghosts.push(ghost3);
-
-    // Setup patrol points
-    ghostPatrolPoints.push(
-        new THREE.Vector3(-15, 0.9, 15),
-        new THREE.Vector3(15, 0.9, 15),
-        new THREE.Vector3(15, 0.9, -15),
-        new THREE.Vector3(-15, 0.9, -15)
+function activateMonster(monster, spot) {
+    monster.container.position.set(spot.x, spot.y, spot.z);
+    monster.rig.root.rotation.x = 0;
+    monster.mode = 'patrol';
+    monster.active = true;
+    monster.dead = false;
+    monster.frozen = false;
+    monster.health = 100;
+    monster.growlTimer = 1.5 + Math.random() * 2;
+    monster.container.visible = !state.monstersHidden;
+    monster.container.rotation.y = Math.atan2(
+        player.position.x - spot.x,
+        player.position.z - spot.z
     );
 }
 
+function releaseMonsters() {
+    if (state.monstersReleased) return;
+    state.monstersReleased = true;
+
+    const first = monsters[0];
+    if (first) {
+        const spots = findRevealSpots(1, []);
+        activateMonster(first, spots[0]);
+    }
+
+    audio.scare();
+    flashPrompt('Something is in the office with you.');
+    setObjective('Objective: Survive — more are coming');
+}
+
+function spawnNextMonster() {
+    const next = monsters.find((m) => !m.active && !m.dead);
+    if (!next) return false;
+
+    const occupied = monsters
+        .filter((m) => m.active && !m.dead)
+        .map((m) => ({ x: m.container.position.x, z: m.container.position.z }));
+    const spots = findRevealSpots(1, occupied);
+    activateMonster(next, spots[0]);
+
+    const remaining = monsters.filter((m) => !m.active && !m.dead).length;
+    audio.scare();
+    flashPrompt(remaining > 0
+        ? `${next.profile.name} arrived. ${remaining} still waiting...`
+        : `${next.profile.name} arrived. Last one.`);
+    return true;
+}
+
+function findRevealSpots(count, occupied = []) {
+    const spots = [];
+    const minDist = 11;
+    const maxDist = 22;
+    const sectorOffset = Math.random() * Math.PI * 2;
+    // Prefer evenly spaced sectors so each wave lands in a different direction.
+    const attempts = Math.max(96, count * 48);
+
+    for (let i = 0; i < attempts && spots.length < count; i++) {
+        const sector = (spots.length + i * 0.37) / Math.max(count, 1);
+        const ang = sectorOffset + sector * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+        const dist = minDist + Math.random() * (maxDist - minDist);
+        const x = player.position.x + Math.sin(ang) * dist;
+        const z = player.position.z + Math.cos(ang) * dist;
+        if (!level.isWalkable(x, z, 0.45)) continue;
+        const y = level.groundAt(x, z);
+        if (y === null) continue;
+        if (spots.some((s) => Math.hypot(s.x - x, s.z - z) < 7)) continue;
+        if (occupied.some((s) => Math.hypot(s.x - x, s.z - z) < 7)) continue;
+        spots.push({ x, y, z });
+    }
+
+    // Wider fallback search if walkable sampling was sparse.
+    for (let i = 0; i < 60 && spots.length < count; i++) {
+        const ang = sectorOffset + (i / 60) * Math.PI * 2;
+        const dist = 8 + (i % 5) * 3;
+        const x = player.position.x + Math.sin(ang) * dist;
+        const z = player.position.z + Math.cos(ang) * dist;
+        if (!level.isWalkable(x, z, 0.4)) continue;
+        const y = level.groundAt(x, z);
+        if (y === null) continue;
+        if (spots.some((s) => Math.hypot(s.x - x, s.z - z) < 5)) continue;
+        spots.push({ x, y, z });
+    }
+
+    while (spots.length < count) {
+        const ang = sectorOffset + spots.length * ((Math.PI * 2) / Math.max(count, 1));
+        spots.push({
+            x: player.position.x + Math.sin(ang) * 14,
+            y: level.spawn.y,
+            z: player.position.z + Math.cos(ang) * 14
+        });
+    }
+    return spots;
+}
+
 function setupEventListeners() {
-    // Start button
-    document.getElementById('start-button').addEventListener('click', () => {
-        document.getElementById('start-screen').style.display = 'none';
-        gameStarted = true;
-        startAudio();
-        document.body.requestPointerLock();
+    document.getElementById('start-button').addEventListener('click', beginGame);
+    document.getElementById('retry-button').addEventListener('click', () => window.location.reload());
+    ui['monster-toggle'].addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleMonsterVisibility();
+        // Keep playing — re-lock if the click stole focus from the canvas.
+        if (state.started && !state.paused && !state.dead && !state.complete) {
+            document.body.requestPointerLock();
+        }
     });
 
-    // Keyboard controls
     document.addEventListener('keydown', (event) => {
         switch (event.code) {
-            case 'KeyW': moveForward = true; break;
-            case 'KeyS': moveBackward = true; break;
-            case 'KeyA': moveLeft = true; break;
-            case 'KeyD': moveRight = true; break;
-            case 'ShiftLeft': isRunning = true; break;
+            case 'KeyW': case 'ArrowUp': input.forward = true; break;
+            case 'KeyS': case 'ArrowDown': input.back = true; break;
+            case 'KeyA': case 'ArrowLeft': input.left = true; break;
+            case 'KeyD': case 'ArrowRight': input.right = true; break;
+            case 'ShiftLeft': case 'ShiftRight': input.run = true; break;
             case 'KeyE': interact(); break;
-            case 'Space': 
-                if (!event.repeat) toggleFlashlight(); 
+            case 'KeyH':
+                if (!event.repeat) toggleMonsterVisibility();
                 break;
+            case 'KeyF':
+                if (!event.repeat) toggleFlashlight();
+                event.preventDefault();
+                break;
+            case 'Space':
+                if (!event.repeat) shootLaser();
+                event.preventDefault();
+                break;
+            default: break;
         }
     });
 
     document.addEventListener('keyup', (event) => {
         switch (event.code) {
-            case 'KeyW': moveForward = false; break;
-            case 'KeyS': moveBackward = false; break;
-            case 'KeyA': moveLeft = false; break;
-            case 'KeyD': moveRight = false; break;
-            case 'ShiftLeft': isRunning = false; break;
+            case 'KeyW': case 'ArrowUp': input.forward = false; break;
+            case 'KeyS': case 'ArrowDown': input.back = false; break;
+            case 'KeyA': case 'ArrowLeft': input.left = false; break;
+            case 'KeyD': case 'ArrowRight': input.right = false; break;
+            case 'ShiftLeft': case 'ShiftRight': input.run = false; break;
+            default: break;
         }
     });
 
-    // Mouse look
     document.addEventListener('mousemove', (event) => {
-        if (gameStarted && document.pointerLockElement === document.body) {
-            camera.rotation.y -= event.movementX * 0.002;
-            camera.rotation.x -= event.movementY * 0.002;
-            camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, camera.rotation.x));
+        if (!isPlaying()) return;
+        player.yaw -= event.movementX * 0.0022;
+        player.pitch -= event.movementY * 0.0022;
+        player.pitch = THREE.MathUtils.clamp(player.pitch, -Math.PI / 2 + 0.05, Math.PI / 2 - 0.05);
+    });
+
+    renderer.domElement.addEventListener('mousedown', (event) => {
+        if (!state.started || state.dead || state.complete) return;
+        if (document.pointerLockElement !== document.body) {
+            document.body.requestPointerLock();
+            return;
+        }
+        // Left or right mouse button fires; interact stays on E.
+        if (event.button === 0 || event.button === 2) {
+            event.preventDefault();
+            shootLaser();
         }
     });
 
-    // Click for flashlight
-    document.addEventListener('mousedown', () => {
-        if (gameStarted) {
-            toggleFlashlight();
-        }
+    renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
+    document.addEventListener('contextmenu', (event) => {
+        if (document.pointerLockElement === document.body) event.preventDefault();
     });
 
-    // Window resize
+    ui['pause-screen'].addEventListener('click', () => {
+        if (state.paused) document.body.requestPointerLock();
+    });
+
+    document.addEventListener('pointerlockchange', () => {
+        const locked = document.pointerLockElement === document.body;
+        state.paused = state.started && !locked && !state.dead && !state.complete;
+        ui['pause-screen'].style.display = state.paused ? 'flex' : 'none';
+        if (state.paused) audio.pauseMusic();
+        else if (state.started && !state.dead && !state.complete) audio.resumeMusic();
+    });
+
     window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
@@ -462,226 +407,504 @@ function setupEventListeners() {
     });
 }
 
-function toggleFlashlight() {
-    flashlightOn = !flashlightOn;
-    camera.flashlight.intensity = flashlightOn ? 2 : 0;
-    
-    // Drain battery when flashlight is on
-    if (flashlightOn) {
-        setInterval(() => {
-            if (flashlightOn && batteryLevel > 0) {
-                batteryLevel -= 0.5;
-                updateUI();
-                
-                if (batteryLevel <= 0) {
-                    flashlightOn = false;
-                    camera.flashlight.intensity = 0;
+function toggleMonsterVisibility() {
+    state.monstersHidden = !state.monstersHidden;
+    ui['monster-toggle'].textContent = state.monstersHidden ? 'Show Monsters' : 'Hide Monsters';
+    ui['monster-toggle'].classList.toggle('hidden-mode', state.monstersHidden);
+
+    for (const monster of monsters) {
+        if (state.monstersHidden || monster.dead || !monster.active) {
+            monster.container.visible = false;
+        } else {
+            monster.container.visible = true;
+        }
+    }
+
+    flashPrompt(state.monstersHidden ? 'Monsters hidden.' : 'Monsters visible.');
+}
+
+function beginGame() {
+    ui['start-screen'].style.display = 'none';
+    state.started = true;
+    state.playTime = 0;
+    state.monstersReleased = false;
+    audio.start();
+    document.body.requestPointerLock();
+    setObjective('Objective: Explore — something arrives in 30 seconds');
+}
+
+function isPlaying() {
+    return state.started && !state.paused && !state.dead && !state.complete;
+}
+
+function shootLaser() {
+    if (!isPlaying() || !gun || gun.cooldown > 0) return;
+
+    gun.cooldown = LASER_COOLDOWN;
+    gun.recoil = 1;
+    audio.laser();
+
+    gun.tip.getWorldPosition(muzzleWorld);
+    raycaster.setFromCamera(screenCentre, camera);
+    raycaster.far = LASER_RANGE;
+
+    const facing = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    let best = null;
+
+    for (const monster of monsters) {
+        if (!monster.active || monster.dead) continue;
+        // Aim at torso height — skinned mesh raycasts are unreliable.
+        const torso = monster.container.position.clone();
+        torso.y += 1.1;
+        const toTarget = torso.clone().sub(camera.position);
+        const dist = toTarget.length();
+        if (dist > LASER_RANGE || dist < 0.4) continue;
+        toTarget.multiplyScalar(1 / dist);
+        if (facing.dot(toTarget) < 0.9) continue;
+
+        // Blocked by map geometry?
+        raycaster.set(camera.position, toTarget);
+        raycaster.far = dist - 0.2;
+        const wallHits = raycaster.intersectObjects(level.colliderList(), false);
+        const blocked = wallHits.some((hit) => {
+            if (!hit.face) return true;
+            const normal = hit.face.normal.clone()
+                .transformDirection(hit.object.matrixWorld)
+                .normalize();
+            return Math.abs(normal.y) < 0.55;
+        });
+        if (blocked) continue;
+
+        if (!best || dist < best.dist) best = { monster, dist, point: torso };
+    }
+
+    let end;
+    if (best) {
+        end = best.point;
+        damageMonster(best.monster, LASER_DAMAGE);
+        audio.hit();
+    } else {
+        raycaster.setFromCamera(screenCentre, camera);
+        raycaster.far = LASER_RANGE;
+        const wallHits = raycaster.intersectObjects(level.colliderList(), false);
+        end = wallHits.length
+            ? wallHits[0].point.clone()
+            : camera.position.clone().addScaledVector(facing, LASER_RANGE);
+    }
+
+    showLaserBeam(gun, muzzleWorld, end);
+}
+
+function damageMonster(monster, amount) {
+    monster.health -= amount;
+    // Brief flash toward red.
+    monster.rig.root.traverse((child) => {
+        if (!child.isMesh || !child.material) return;
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        for (const mat of mats) {
+            if (!mat.emissive) continue;
+            mat.userData.prevEmissive = mat.emissiveIntensity;
+            mat.emissiveIntensity = Math.max(mat.emissiveIntensity || 0, 1.8);
+        }
+    });
+    setTimeout(() => {
+        monster.rig.root.traverse((child) => {
+            if (!child.isMesh || !child.material) return;
+            const mats = Array.isArray(child.material) ? child.material : [child.material];
+            for (const mat of mats) {
+                if (mat.userData.prevEmissive !== undefined) {
+                    mat.emissiveIntensity = mat.userData.prevEmissive;
                 }
             }
-        }, 100);
+        });
+    }, 90);
+
+    if (monster.health <= 0) killMonster(monster);
+}
+
+function killMonster(monster) {
+    monster.dead = true;
+    monster.active = false;
+    monster.container.visible = false;
+    flashPrompt(`${monster.profile.name} dropped.`);
+    audio.scare();
+
+    // Bring in the next hunter at a fresh distant spot.
+    if (spawnNextMonster()) {
+        setObjective('Objective: Survive — another one is hunting you');
+        return;
     }
+
+    if (monsters.every((m) => m.dead)) {
+        setObjective('Objective: All clear — grab the key and leave');
+    }
+}
+
+function toggleFlashlight() {
+    if (!state.started || state.dead || state.complete) return;
+    if (player.battery <= 0 && !player.flashlightOn) {
+        audio.locked();
+        return;
+    }
+    player.flashlightOn = !player.flashlightOn;
+    lighting.setFlashlight(player.flashlightOn, player.battery / 100);
+    audio.click();
 }
 
 function interact() {
-    if (!canMove) return;
+    if (!isPlaying()) return;
 
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
-    
-    const intersects = raycaster.intersectObjects(interactableObjects);
-    
-    if (intersects.length > 0 && intersects[0].distance < 3) {
-        const object = intersects[0].object;
-        
-        if (object.userData.type === 'key') {
-            hasKey = true;
-            scene.remove(object);
-            interactableObjects.splice(interactableObjects.indexOf(object), 1);
-            document.getElementById('objective-text').textContent = 'Objective: Use the key on the emergency exit door';
-            
-            // Play pickup sound
-            playSound('pickup');
-        }
-    }
+    raycaster.setFromCamera(screenCentre, camera);
+    raycaster.far = 3.2;
+    const hits = raycaster.intersectObjects(level.interactables, true);
 
-    // Check emergency door
-    if (emergencyKey && hasKey && !chapterComplete) {
-        const distance = camera.position.distanceTo(emergencyKey.position);
-        if (distance < 3) {
-            completeChapter();
-        }
-    }
-}
+    if (hits.length > 0) {
+        const data = hits[0].object.userData;
 
-function completeChapter() {
-    chapterComplete = true;
-    canMove = false;
-    document.exitPointerLock();
-    
-    setTimeout(() => {
-        document.getElementById('chapter-end').style.display = 'flex';
-    }, 1000);
-}
-
-function startAudio() {
-    try {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        
-        // Create heartbeat sound
-        const oscillator = audioContext.createOscillator();
-        const gainNode = audioContext.createGain();
-        
-        oscillator.connect(gainNode);
-        gainNode.connect(audioContext.destination);
-        
-        oscillator.frequency.value = 1;
-        oscillator.type = 'sine';
-        gainNode.gain.value = 0;
-        
-        oscillator.start();
-        heartbeatSound = { oscillator, gainNode };
-        
-        // Update heartbeat based on fear
-        setInterval(updateHeartbeat, 1000);
-    } catch (e) {
-        console.log('Audio not supported');
-    }
-}
-
-function updateHeartbeat() {
-    if (heartbeatSound && gameStarted) {
-        const rate = 60 + fearLevel * 30;
-        heartbeatSound.oscillator.frequency.value = rate / 60;
-        
-        // Pulse
-        const time = audioContext.currentTime;
-        heartbeatSound.gainNode.gain.setValueAtTime(0.1, time);
-        heartbeatSound.gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.1);
-    }
-}
-
-function playSound(type) {
-    if (!audioContext) return;
-    
-    const oscillator = audioContext.createOscillator();
-    const gainNode = audioContext.createGain();
-    
-    oscillator.connect(gainNode);
-    gainNode.connect(audioContext.destination);
-    
-    switch (type) {
-        case 'pickup':
-            oscillator.frequency.value = 800;
-            gainNode.gain.value = 0.1;
-            oscillator.start();
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
-            oscillator.stop(audioContext.currentTime + 0.2);
-            break;
-        case 'footstep':
-            oscillator.frequency.value = 100;
-            gainNode.gain.value = 0.05;
-            oscillator.start();
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
-            oscillator.stop(audioContext.currentTime + 0.1);
-            break;
-    }
-}
-
-function updateGhosts() {
-    if (!gameStarted || chapterComplete) return;
-
-    ghosts.forEach((ghost, index) => {
-        const patrolPoint = ghostPatrolPoints[ghost.userData.patrolIndex];
-        const direction = new THREE.Vector3().subVectors(patrolPoint, ghost.position);
-        
-        if (direction.length() < 0.5) {
-            ghost.userData.patrolIndex = (ghost.userData.patrolIndex + 1) % ghostPatrolPoints.length;
-        } else {
-            direction.normalize();
-            ghost.position.add(direction.multiplyScalar(ghost.userData.speed));
+        if (data.type === 'key') {
+            player.hasKey = true;
+            level.group.remove(level.keyItem);
+            if (level.keyGlow) level.keyGlow.visible = false;
+            removeInteractable(level.keyItem);
+            audio.pickup();
+            setObjective('Objective: Unlock the exit door and get out');
+            return;
         }
 
-        // Check distance to player
-        const distanceToPlayer = ghost.position.distanceTo(camera.position);
-        
-        if (distanceToPlayer < 5) {
-            fearLevel = Math.min(100, fearLevel + 0.5);
-            
-            // Ghost becomes aggressive
-            if (distanceToPlayer < 2 && flashlightOn) {
-                ghost.userData.speed *= 1.5;
+        if (data.type === 'battery') {
+            const cell = hits[0].object;
+            player.spareBatteries += 1;
+            level.group.remove(cell);
+            removeInteractable(cell);
+            audio.pickup();
+            updateUI();
+            return;
+        }
+
+        if (data.type === 'mapDoor') {
+            const door = data.door || hits[0].object.userData.door;
+            if (door?.open) {
+                flashPrompt('Door is already open.');
+                return;
             }
-        } else {
-            fearLevel = Math.max(0, fearLevel - 0.1);
+            if (level.openDoor(door)) {
+                audio.unlock();
+                flashPrompt('Door opened.');
+            }
+            return;
         }
 
-        // Update heartbeat overlay
-        document.getElementById('heartbeat-overlay').style.opacity = fearLevel / 200;
-    });
+        if (data.type === 'exit') {
+            if (player.hasKey) completeChapter();
+            else {
+                audio.locked();
+                flashPrompt('The deadbolt is locked. You need the key.');
+            }
+            return;
+        }
+    }
+
+    if (player.spareBatteries > 0 && player.battery < 60) {
+        player.spareBatteries -= 1;
+        player.battery = 100;
+        lighting.setFlashlight(player.flashlightOn, 1);
+        audio.click();
+        flashPrompt('Battery replaced.');
+        updateUI();
+    }
 }
 
-function updatePlayer() {
-    if (!canMove || !gameStarted || chapterComplete) return;
+function removeInteractable(object) {
+    const index = level.interactables.indexOf(object);
+    if (index >= 0) level.interactables.splice(index, 1);
+}
 
-    const speed = isRunning ? 0.15 : 0.08;
-    
-    playerDirection.z = Number(moveForward) - Number(moveBackward);
-    playerDirection.x = Number(moveRight) - Number(moveLeft);
-    playerDirection.normalize();
+let promptTimer = 0;
+function flashPrompt(text) {
+    ui['interact-prompt'].textContent = text;
+    ui['interact-prompt'].style.opacity = '1';
+    promptTimer = 2.4;
+}
 
-    if (moveForward || moveBackward) {
-        playerVelocity.z = playerDirection.z * speed;
+function setObjective(text) {
+    ui['objective-text'].textContent = text;
+}
+
+function updatePlayer(dt) {
+    camera.rotation.y = player.yaw;
+    camera.rotation.x = player.pitch;
+
+    const wantsRun = input.run && player.stamina > 1 && (input.forward || input.back || input.left || input.right);
+    const speed = wantsRun ? RUN_SPEED : WALK_SPEED;
+
+    player.stamina = THREE.MathUtils.clamp(
+        player.stamina + (wantsRun ? -22 : 13) * dt, 0, 100
+    );
+
+    const forwardAxis = Number(input.forward) - Number(input.back);
+    const strafeAxis = Number(input.right) - Number(input.left);
+    const moving = forwardAxis !== 0 || strafeAxis !== 0;
+
+    if (moving) {
+        const length = Math.hypot(forwardAxis, strafeAxis);
+        const sinYaw = Math.sin(player.yaw);
+        const cosYaw = Math.cos(player.yaw);
+        const dx = (-sinYaw * forwardAxis + cosYaw * strafeAxis) / length * speed * dt;
+        const dz = (-cosYaw * forwardAxis - sinYaw * strafeAxis) / length * speed * dt;
+        level.resolveMovement(player.position, dx, dz, 0.34);
+
+        player.bob += dt * (wantsRun ? 13 : 8.5);
+        if (Math.sin(player.bob) > 0.985) audio.footstep();
     } else {
-        playerVelocity.z = 0;
+        player.bob += dt * 1.6;
     }
 
-    if (moveLeft || moveRight) {
-        playerVelocity.x = playerDirection.x * speed;
-    } else {
-        playerVelocity.x = 0;
+    // Keep feet on the mesh floor; only teleport-unstick when truly embedded.
+    if (moving) {
+        level.snapToGround(player.position);
+        if ((state.frameCount & 7) === 0) {
+            level.freeIfStuck(player.position, 0.34);
+        }
+    } else if ((state.frameCount & 15) === 0) {
+        // Idle soft depenetration if standing slightly inside a wall.
+        level.depenetrate(
+            player.position,
+            0.34,
+            player.position.y - level.eyeHeight + 1.0
+        );
     }
 
-    // Apply movement relative to camera direction
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-    forward.y = 0;
-    forward.normalize();
-    
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-    right.y = 0;
-    right.normalize();
+    if ((state.frameCount & 1) === 0) {
+        level.updateStreaming(player.position.x, player.position.z);
+    }
 
-    const moveVector = new THREE.Vector3();
-    moveVector.addScaledVector(forward, playerVelocity.z);
-    moveVector.addScaledVector(right, playerVelocity.x);
+    const bobAmount = moving ? (wantsRun ? 0.055 : 0.032) : 0.008;
+    camera.position.set(
+        player.position.x,
+        player.position.y + Math.sin(player.bob) * bobAmount,
+        player.position.z
+    );
 
-    camera.position.add(moveVector);
+    if (player.flashlightOn) {
+        player.battery = Math.max(0, player.battery - BATTERY_DRAIN * dt);
+        if (player.battery <= 0) {
+            player.flashlightOn = false;
+            lighting.setFlashlight(false, 0);
+            flashPrompt('The flashlight dies.');
+        } else {
+            lighting.setFlashlight(true, player.battery / 100);
+        }
+    }
 
-    // Boundary checks
-    camera.position.x = Math.max(-24, Math.min(24, camera.position.x));
-    camera.position.z = Math.max(-24, Math.min(24, camera.position.z));
-    camera.position.y = 1.7;
+    player.hurtCooldown = Math.max(0, player.hurtCooldown - dt);
+}
 
-    // Random footstep sounds
-    if ((moveForward || moveBackward || moveLeft || moveRight) && Math.random() < 0.05) {
-        playSound('footstep');
+function updateMonsters(dt, elapsed) {
+    if (!state.monstersReleased) return;
+
+    const playerPos = player.position;
+    const patrol = level.patrolLoop;
+
+    for (const monster of monsters) {
+        if (!monster.active || monster.dead || state.monstersHidden) {
+            monster.container.visible = false;
+            continue;
+        }
+
+        const pos = monster.container.position;
+        const distance = Math.hypot(playerPos.x - pos.x, playerPos.z - pos.z);
+
+        if (monster.frozen) {
+            monster.rig.update(dt);
+            monster.container.visible = true;
+            continue;
+        }
+
+        const visible = level.hasLineOfSight(pos.x, pos.z, playerPos.x, playerPos.z);
+        const sight = monster.profile.sight * (player.flashlightOn ? 1.7 : 1);
+        const hunting = visible && distance < sight;
+
+        if (hunting) monster.mode = 'chase';
+        else if (monster.mode === 'chase' && distance > sight * 1.6) monster.mode = 'patrol';
+
+        const chasing = monster.mode === 'chase';
+        const speed = chasing ? monster.profile.chase : monster.profile.speed;
+
+        let targetX;
+        let targetZ;
+        if (chasing) {
+            targetX = playerPos.x;
+            targetZ = playerPos.z;
+        } else {
+            const waypoint = patrol[monster.waypoint % patrol.length];
+            targetX = waypoint.x;
+            targetZ = waypoint.z;
+            if (Math.hypot(targetX - pos.x, targetZ - pos.z) < 1.2) {
+                monster.waypoint = (monster.waypoint + 1) % patrol.length;
+            }
+        }
+
+        steer(monster, targetX, targetZ, speed, dt);
+
+        const desiredYaw = Math.atan2(targetX - pos.x, targetZ - pos.z);
+        let delta = desiredYaw - monster.container.rotation.y;
+        while (delta > Math.PI) delta -= Math.PI * 2;
+        while (delta < -Math.PI) delta += Math.PI * 2;
+        monster.container.rotation.y += delta * Math.min(1, dt * 5);
+
+        monster.phase += dt * speed * 3.4;
+        monster.rig.update(dt);
+        monster.rig.setLocomotion(monster.phase, chasing ? 1.45 : 1.0);
+        monster.container.visible = distance < CHARACTER_DRAW_DISTANCE;
+
+        if (distance < 6.5 && visible) {
+            player.fear = Math.min(100, player.fear + (chasing ? 34 : 16) * dt);
+            monster.growlTimer -= dt;
+            if (monster.growlTimer <= 0) {
+                audio.growl();
+                monster.growlTimer = 4 + Math.random() * 6;
+            }
+        }
+
+        if (distance < 1.35 && player.hurtCooldown <= 0) {
+            player.health -= 24;
+            player.fear = 100;
+            player.hurtCooldown = 1.1;
+            audio.scare();
+            triggerDamageFlash();
+            if (player.health <= 0) die(monster.profile.name);
+        }
+    }
+
+    player.fear = Math.max(0, player.fear - 9 * dt);
+}
+
+function steer(monster, targetX, targetZ, speed, dt) {
+    const pos = monster.container.position;
+    const dx = targetX - pos.x;
+    const dz = targetZ - pos.z;
+    const distance = Math.hypot(dx, dz) || 1;
+    let stepX = (dx / distance) * speed * dt;
+    let stepZ = (dz / distance) * speed * dt;
+
+    // Same swept resolver as the player (floor-space, not eye-space).
+    const beforeX = pos.x;
+    const beforeZ = pos.z;
+    level.resolveMovement(pos, stepX, stepZ, 0.42, { eyeHeight: 1.0, fromEye: false });
+
+    // If fully blocked toward the goal, try a side-step so AI doesn't freeze in corners.
+    if (Math.hypot(pos.x - beforeX, pos.z - beforeZ) < 0.001) {
+        const side = Math.sin(monster.phase) >= 0 ? 1 : -1;
+        level.resolveMovement(pos, -stepZ * side * 0.7, stepX * side * 0.7, 0.42, {
+            eyeHeight: 1.0,
+            fromEye: false
+        });
+    }
+}
+
+function triggerDamageFlash() {
+    ui['damage-flash'].style.opacity = '1';
+    setTimeout(() => { ui['damage-flash'].style.opacity = '0'; }, 120);
+}
+
+function updateAtmosphere(dt) {
+    state.heartTimer -= dt;
+    const intensity = player.fear / 100;
+    if (state.heartTimer <= 0 && intensity > 0.12) {
+        audio.heartbeat(0.4 + intensity);
+        state.heartTimer = 1.15 - intensity * 0.65;
+    }
+    ui['heartbeat-overlay'].style.opacity = String(intensity * 0.85);
+
+    if (promptTimer > 0) {
+        promptTimer -= dt;
+        if (promptTimer <= 0) ui['interact-prompt'].style.opacity = '0';
+    }
+}
+
+function updateInteractPrompt() {
+    if (promptTimer > 0) return;
+    raycaster.setFromCamera(screenCentre, camera);
+    raycaster.far = 3.2;
+    const hits = raycaster.intersectObjects(level.interactables, true);
+    if (hits.length > 0) {
+        const type = hits[0].object.userData.type;
+        const label = type === 'key' ? 'Take the office key  [E]'
+            : type === 'battery' ? 'Take battery  [E]'
+                : type === 'mapDoor' ? (hits[0].object.userData.door?.open ? 'Door open' : 'Open door  [E]')
+                    : player.hasKey ? 'Unlock the door  [E]' : 'Locked  [E]';
+        ui['interact-prompt'].textContent = label;
+        ui['interact-prompt'].style.opacity = '1';
+    } else {
+        ui['interact-prompt'].style.opacity = '0';
     }
 }
 
 function updateUI() {
-    document.getElementById('health-fill').style.width = health + '%';
-    document.getElementById('battery-fill').style.width = batteryLevel + '%';
+    ui['health-fill'].style.width = `${Math.max(0, player.health)}%`;
+    ui['battery-fill'].style.width = `${player.battery}%`;
+    ui['stamina-fill'].style.width = `${player.stamina}%`;
+    ui['battery-count'].textContent = `x${player.spareBatteries}`;
 }
 
-function animate() {
-    requestAnimationFrame(animate);
+function die(cause) {
+    state.dead = true;
+    audio.pauseMusic();
+    document.exitPointerLock();
+    document.getElementById('death-cause').textContent = cause + ' found you.';
+    ui['death-screen'].style.display = 'flex';
+}
 
-    if (gameStarted && !chapterComplete) {
-        updatePlayer();
-        updateGhosts();
+function completeChapter() {
+    state.complete = true;
+    audio.pauseMusic();
+    audio.unlock();
+    document.exitPointerLock();
+    setTimeout(() => { ui['chapter-end'].style.display = 'flex'; }, 900);
+}
+
+function frame() {
+    timer.update();
+    const dt = Math.min(timer.getDelta(), 0.05);
+    const elapsed = timer.getElapsed();
+    state.elapsed = elapsed;
+    state.frameCount += 1;
+
+    if (isPlaying()) {
+        state.playTime += dt;
+        if (!state.monstersReleased && state.playTime >= MONSTER_REVEAL_DELAY) {
+            releaseMonsters();
+        }
+        updatePlayer(dt);
+        // Monster AI / skinning every other frame.
+        if ((state.frameCount & 1) === 0) updateMonsters(dt * 2, elapsed);
+        if ((state.frameCount & 3) === 0) updateInteractPrompt();
+        updateAtmosphere(dt);
+        if ((state.frameCount & 3) === 0) updateUI();
+    } else if (level && (state.frameCount & 7) === 0) {
+        level.updateStreaming(player.position.x, player.position.z);
+    }
+
+    if (gun) updateGun(gun, dt);
+
+    if (level?.keyItem?.parent && !player.hasKey) {
+        const dx = level.keyItem.position.x - player.position.x;
+        const dz = level.keyItem.position.z - player.position.z;
+        const near = (dx * dx + dz * dz) < 225;
+        level.keyItem.visible = near;
+        if (level.keyGlow) level.keyGlow.visible = near;
+        if (near && (state.frameCount & 1) === 0) {
+            level.keyItem.rotation.y = elapsed * 1.2;
+            level.keyItem.position.y = level.keyItem.userData.baseY + Math.sin(elapsed * 2) * 0.03;
+            if (level.keyGlow) level.keyGlow.position.y = level.keyItem.position.y;
+        }
     }
 
     renderer.render(scene, camera);
 }
 
-// Initialize on load
-window.addEventListener('load', init);
+window.addEventListener('load', () => {
+    init().then(() => {
+        setObjective('Objective: Explore the office — hunters arrive in 30 seconds');
+    });
+});

@@ -1,9 +1,11 @@
-```
 # Dependencies
 node_modules/
 
 # Build artifacts
 dist/
+
+# Smoke test screenshots
+.smoke/
 
 # Environment
 .env
@@ -43,9 +45,3 @@ package-lock.json
 *.Z
 *.lz
 *.lzo
-*.tar.gz
-*.tar.bz2
-*.tar.xz
-*.tar.zst
-
-```
