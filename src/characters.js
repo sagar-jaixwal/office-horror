@@ -98,10 +98,12 @@ function attachCommon(rig) {
 
     rig.setLocomotion = (phase, intensity) => {
         if (rig.clipDriven) {
-            // Idle clip stays on; speed it up while travelling so the creature
-            // does not look frozen while sliding across the floor.
-            if (rig.action) rig.action.timeScale = 0.65 + intensity * 1.1;
-            rig.root.position.y = rig.groundY + Math.abs(Math.sin(phase * 2)) * 0.045 * intensity;
+            // Walk clip is in-place; sync playback speed to chase intensity.
+            if (rig.action) {
+                const moving = intensity > 0.05;
+                rig.action.paused = !moving;
+                if (moving) rig.action.timeScale = 0.75 + intensity * 0.85;
+            }
             return;
         }
         applyWalkCycle(rig, phase, intensity);
@@ -109,6 +111,13 @@ function attachCommon(rig) {
 
     rig.update = (dt) => {
         rig.mixer?.update(dt);
+        // Walk clips often include pelvis root motion — pin XZ so the capsule
+        // (container) owns world movement and the mesh does not drift sideways.
+        if (rig.hipsLock) {
+            const hips = rig.hipsLock.node;
+            hips.position.x = rig.hipsLock.x;
+            hips.position.z = rig.hipsLock.z;
+        }
     };
 
     rig.lookAround = (amount) => {
@@ -123,19 +132,20 @@ function attachCommon(rig) {
 // ---------------------------------------------------------------------------
 
 function mapHumanoidBones(root) {
+    // Mixamo (Hips/LeftArm, mixamorig:*) and UE-style (pelvis/upperarm_l) naming.
     return {
-        hips: findBone(root, 'Hips'),
-        spine: findBone(root, 'Spine2', 'Spine1'),
-        neck: findBone(root, 'Neck'),
-        head: findBone(root, 'Head_'),
-        leftArm: findBone(root, 'LeftArm'),
-        rightArm: findBone(root, 'RightArm'),
-        leftForearm: findBone(root, 'LeftForeArm'),
-        rightForearm: findBone(root, 'RightForeArm'),
-        leftThigh: findBone(root, 'LeftUpLeg'),
-        rightThigh: findBone(root, 'RightUpLeg'),
-        leftShin: findBone(root, 'LeftLeg'),
-        rightShin: findBone(root, 'RightLeg')
+        hips: findBone(root, 'Hips', 'pelvis'),
+        spine: findBone(root, 'Spine2', 'Spine1', 'spine_03', 'spine_02'),
+        neck: findBone(root, 'Neck', 'neck_01'),
+        head: findBone(root, 'head_1', 'Head_'),
+        leftArm: findBone(root, 'LeftArm', 'upperarm_l'),
+        rightArm: findBone(root, 'RightArm', 'upperarm_r'),
+        leftForearm: findBone(root, 'LeftForeArm', 'lowerarm_l'),
+        rightForearm: findBone(root, 'RightForeArm', 'lowerarm_r'),
+        leftThigh: findBone(root, 'LeftUpLeg', 'thigh_l'),
+        rightThigh: findBone(root, 'RightUpLeg', 'thigh_r'),
+        leftShin: findBone(root, 'LeftLeg', 'calf_l'),
+        rightShin: findBone(root, 'RightLeg', 'calf_r')
     };
 }
 
@@ -165,7 +175,7 @@ function buildGlbCharacter(modelName, { height, clip } = {}) {
     root.add(instance.root);
     root.updateMatrixWorld(true);
 
-    // Unlit skins are much cheaper than PBR on the crawler.
+    // Unlit skins are much cheaper than full PBR on skinned hunters.
     instance.root.traverse((child) => {
         if (!child.isMesh) return;
         child.castShadow = false;
@@ -192,8 +202,18 @@ function buildGlbCharacter(modelName, { height, clip } = {}) {
 
     const rig = { root, model: instance.root, joints, height: height || 1.8, isGlb: true };
 
-    if (clip && instance.animations.length) {
-        const found = instance.animations.find((a) => a.name === clip) || instance.animations[0];
+    if (bones.hips) {
+        rig.hipsLock = {
+            node: bones.hips,
+            x: bones.hips.position.x,
+            z: bones.hips.position.z
+        };
+    }
+
+    if (instance.animations.length) {
+        const found = (clip && instance.animations.find((a) => a.name === clip))
+            || instance.animations.find((a) => /walk/i.test(a.name))
+            || instance.animations[0];
         rig.mixer = new THREE.AnimationMixer(instance.root);
         rig.action = rig.mixer.clipAction(found);
         rig.action.play();
@@ -392,19 +412,32 @@ function buildProceduralHumanoid(config = {}) {
 // Public constructors
 // ---------------------------------------------------------------------------
 
-// Garden crawler with colour / speed variants so the three hunters feel distinct.
+function buildLarvaMonster({ height, tint, profile }) {
+    const glb = hasModel('larva') && buildGlbCharacter('larva', {
+        height,
+        clip: 'Armature|Armature|mixamo.com|Layer0'
+    });
+    if (!glb) return null;
+    if (tint != null) {
+        recolour(glb.root, (material) => {
+            material.color.setHex(tint);
+        });
+    }
+    glb.profile = profile;
+    return glb;
+}
+
+// Larva-man walk GLB with colour / speed variants so the three hunters feel distinct.
 export function createMonster(kind) {
     const m = shared();
 
     if (kind === 'acidMouth') {
-        const glb = hasModel('crawler') && buildGlbCharacter('crawler', { height: 2.3, clip: 'Idle' });
-        if (glb) {
-            recolour(glb.root, (material) => {
-                material.color.setHex(0x6c7a45);
-            });
-            glb.profile = { speed: 0.95, chase: 1.95, sight: 12, name: 'The Acid Mouth' };
-            return glb;
-        }
+        const glb = buildLarvaMonster({
+            height: 1.95,
+            tint: 0x6c7a45,
+            profile: { speed: 0.95, chase: 1.95, sight: 12, name: 'The Acid Mouth' }
+        });
+        if (glb) return glb;
         const rig = buildProceduralHumanoid({
             height: 1.78, skinMaterial: m.rotten, torsoMaterial: m.rotten, legMaterial: m.rotten,
             armLengthScale: 1.12, thin: 1.25, hunch: 0.55,
@@ -415,14 +448,12 @@ export function createMonster(kind) {
     }
 
     if (kind === 'stalker') {
-        const glb = hasModel('crawler') && buildGlbCharacter('crawler', { height: 2.05, clip: 'Idle' });
-        if (glb) {
-            recolour(glb.root, (material) => {
-                material.color.setHex(0x3a2a28);
-            });
-            glb.profile = { speed: 1.05, chase: 2.35, sight: 13, name: 'The Stalker' };
-            return glb;
-        }
+        const glb = buildLarvaMonster({
+            height: 1.85,
+            tint: 0x3a2a28,
+            profile: { speed: 1.05, chase: 2.35, sight: 13, name: 'The Stalker' }
+        });
+        if (glb) return glb;
         const rig = buildProceduralHumanoid({
             height: 1.7, skinMaterial: m.pale, torsoMaterial: m.rotten, legMaterial: m.pale,
             armLengthScale: 1.25, thin: 1.05, hunch: 0.35,
@@ -432,15 +463,13 @@ export function createMonster(kind) {
         return rig;
     }
 
-    // ceilingCrawler and any unknown kind share the pale crawler look.
-    const glb = hasModel('crawler') && buildGlbCharacter('crawler', { height: 1.9, clip: 'Idle' });
-    if (glb) {
-        recolour(glb.root, (material) => {
-            material.color.setHex(0x9aa3a6);
-        });
-        glb.profile = { speed: 1.1, chase: 2.85, sight: 14, name: 'The Ceiling Crawler' };
-        return glb;
-    }
+    // ceilingCrawler and any unknown kind — pale larva.
+    const glb = buildLarvaMonster({
+        height: 1.75,
+        tint: 0x9aa3a6,
+        profile: { speed: 1.1, chase: 2.85, sight: 14, name: 'The Ceiling Crawler' }
+    });
+    if (glb) return glb;
     const rig = buildProceduralHumanoid({
         height: 1.55, skinMaterial: m.sinew, torsoMaterial: m.rotten, legMaterial: m.sinew,
         armLengthScale: 1.6, legLengthScale: 1.35, thin: 0.7, hunch: -0.5,

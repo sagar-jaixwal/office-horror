@@ -1,11 +1,13 @@
 // Pure client runtime. Host only delivers bytes; WebGL runs in the visitor browser.
 
 export const CLIENT_ASSET_URLS = [
-    { url: '/models/garden_crawler.glb', label: 'monster', heavy: true },
+    { url: '/models/larva_man-walking.glb', label: 'monster', heavy: true },
     { url: '/models/nerf_gun.glb', label: 'gun', heavy: true },
     { url: '/models/the_heilwald_loophole_randolphs_office.glb', label: 'map', heavy: true },
     { url: '/music/gun/media_man_uk-lazer-gun-432285.mp3', label: 'laser sfx', heavy: false },
     { url: '/music/sound/moster_sound.mp3', label: 'monster sfx', heavy: false },
+    { url: '/music/sound/step.mp3', label: 'footsteps', heavy: false },
+    { url: '/music/sound/open_door.mp3', label: 'door sfx', heavy: false },
     {
         url: '/music/background%20music/Resident%20Evil%204%20OST%20-%20Garrador%20%5BX70DwhWz0Lw%5D.mp3',
         label: 'music',

@@ -1,7 +1,11 @@
 # The Last Shift
 
-A first-person survival horror game for the browser, built with Three.js and Vite.
-No art assets: every texture, model and sound is generated at runtime.
+A first-person survival horror game for the browser, built with **Three.js** and **Vite**.
+
+> **Full technical documentation** (stack, assets, systems, controls, mobile, architecture):  
+> see **[GAME_DOCUMENTATION.md](./GAME_DOCUMENTATION.md)**
+
+The sections below are an older overview; prefer `GAME_DOCUMENTATION.md` for current details.
 
 ## Story
 

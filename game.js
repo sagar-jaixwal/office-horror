@@ -28,7 +28,7 @@ import {
 
 const MODEL_LABELS = {
     building: 'map',
-    crawler: 'monster',
+    larva: 'monster',
     gun: 'gun'
 };
 
@@ -210,7 +210,7 @@ async function init() {
     camera = new THREE.PerspectiveCamera(
         65,
         window.innerWidth / window.innerHeight,
-        0.15,
+        0.01,
         initialPreset.cameraFar
     );
     camera.rotation.order = 'YXZ';
@@ -919,7 +919,7 @@ function interact() {
                 return;
             }
             if (level.openDoor(door)) {
-                audio.unlock();
+                audio.doorOpen();
                 flashPrompt('Door opened.');
             }
             return;

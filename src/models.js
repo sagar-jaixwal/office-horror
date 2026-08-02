@@ -7,10 +7,11 @@ import { mergeStaticByMaterial } from './merge.js';
 // Characters are normalised to a known height. The building is normalised by
 // door height so rooms feel human-scale rather than Sketchfab-unit scale.
 export const MODEL_SOURCES = {
-    crawler: {
-        url: 'models/garden_crawler.glb',
+    // Larva man with Mixamo walk cycle — used for all hunter monsters.
+    larva: {
+        url: 'models/larva_man-walking.glb',
         kind: 'character',
-        targetHeight: 2.15,
+        targetHeight: 1.85,
         preRotate: null,
         faceOffset: 0
     },
@@ -292,7 +293,11 @@ export function findBone(root, ...prefixes) {
     let match = null;
     root.traverse((child) => {
         if (match || !child.isBone) return;
-        if (prefixes.some((prefix) => child.name.startsWith(prefix))) match = child;
+        const name = child.name;
+        const bare = name.includes(':') ? name.slice(name.lastIndexOf(':') + 1) : name;
+        if (prefixes.some((prefix) => name.startsWith(prefix) || bare.startsWith(prefix))) {
+            match = child;
+        }
     });
     return match;
 }

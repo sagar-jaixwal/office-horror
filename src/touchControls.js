@@ -21,7 +21,7 @@ export function isTouchDevice() {
  */
 export function setupTouchControls(opts) {
     const root = document.getElementById('touch-controls');
-    if (!root) return { show() {}, hide() {} };
+    if (!root) return { show() {}, hide() {}, tick() {} };
 
     const stick = document.getElementById('touch-stick');
     const knob = document.getElementById('touch-stick-knob');
@@ -192,7 +192,6 @@ export function setupTouchControls(opts) {
         opts.onPause?.();
     });
 
-    // Auto-fire while FIRE is held (respects gun cooldown inside shootLaser).
     function tick(dt) {
         if (!fireHold || !opts.isPlaying()) return;
         fireTimer += dt;

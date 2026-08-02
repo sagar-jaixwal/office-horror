@@ -1,6 +1,8 @@
-// Procedural SFX for footsteps / UI, plus real MP3s for the laser, monster, and BGM.
+// Procedural SFX fallbacks, plus real MP3s for laser, footsteps, doors, monster, BGM.
 const LASER_URL = '/music/gun/media_man_uk-lazer-gun-432285.mp3';
 const MONSTER_URL = '/music/sound/moster_sound.mp3';
+const STEP_URL = '/music/sound/step.mp3';
+const DOOR_URL = '/music/sound/open_door.mp3';
 const BGM_URL = '/music/background%20music/Resident%20Evil%204%20OST%20-%20Garrador%20%5BX70DwhWz0Lw%5D.mp3';
 
 export class Audio {
@@ -10,6 +12,8 @@ export class Audio {
         this.noiseBuffer = null;
         this.laserEl = null;
         this.monsterEl = null;
+        this.stepEl = null;
+        this.doorEl = null;
         this.bgmEl = null;
         this.started = false;
     }
@@ -38,6 +42,14 @@ export class Audio {
         this.monsterEl = new window.Audio(MONSTER_URL);
         this.monsterEl.preload = 'auto';
         this.monsterEl.volume = 0.92;
+
+        this.stepEl = new window.Audio(STEP_URL);
+        this.stepEl.preload = 'auto';
+        this.stepEl.volume = 0.42;
+
+        this.doorEl = new window.Audio(DOOR_URL);
+        this.doorEl.preload = 'auto';
+        this.doorEl.volume = 0.7;
 
         this.bgmEl = new window.Audio(BGM_URL);
         this.bgmEl.preload = 'auto';
@@ -89,10 +101,51 @@ export class Audio {
         osc.stop(now + duration + 0.05);
     }
 
-    footstep() { this.noise(0.11, { gain: 0.11, frequency: 420, q: 1.4 }); }
+    footstep() {
+        if (this.stepEl) {
+            try {
+                // Clone so rapid steps can overlap without cutting each other off.
+                const el = this.stepEl.cloneNode();
+                el.volume = this.stepEl.volume;
+                const play = el.play();
+                if (play?.catch) play.catch(() => this.footstepFallback());
+                return;
+            } catch {
+                // fall through
+            }
+        }
+        this.footstepFallback();
+    }
+
+    footstepFallback() {
+        this.noise(0.11, { gain: 0.11, frequency: 420, q: 1.4 });
+    }
+
+    doorOpen() {
+        if (this.doorEl) {
+            try {
+                this.doorEl.currentTime = 0;
+                const play = this.doorEl.play();
+                if (play?.catch) play.catch(() => this.doorOpenFallback());
+                return;
+            } catch {
+                // fall through
+            }
+        }
+        this.doorOpenFallback();
+    }
+
+    doorOpenFallback() {
+        this.noise(0.2, { gain: 0.2, frequency: 1400, q: 3 });
+        this.tone(180, 0.5, { gain: 0.1, type: 'square', slideTo: 90 });
+    }
+
     click() { this.noise(0.04, { gain: 0.22, type: 'highpass', frequency: 2600 }); }
     pickup() { this.tone(660, 0.25, { gain: 0.12, type: 'triangle', slideTo: 1180 }); }
-    unlock() { this.noise(0.2, { gain: 0.2, frequency: 1400, q: 3 }); this.tone(180, 0.5, { gain: 0.1, type: 'square', slideTo: 90 }); }
+    unlock() {
+        this.noise(0.2, { gain: 0.2, frequency: 1400, q: 3 });
+        this.tone(180, 0.5, { gain: 0.1, type: 'square', slideTo: 90 });
+    }
     locked() { this.noise(0.08, { gain: 0.18, frequency: 700, q: 6 }); }
 
     heartbeat(strength) {
