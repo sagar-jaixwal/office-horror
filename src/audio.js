@@ -3,7 +3,9 @@ const LASER_URL = '/music/gun/media_man_uk-lazer-gun-432285.mp3';
 const MONSTER_URL = '/music/sound/moster_sound.mp3';
 const STEP_URL = '/music/sound/step.mp3';
 const DOOR_URL = '/music/sound/open_door.mp3';
+const MENU_BGM_URL = '/music/background%20music/Resident%20evil%204%20-%20Save%20Theme.mp3';
 const BGM_URL = '/music/background%20music/Resident%20Evil%204%20OST%20-%20Garrador%20%5BX70DwhWz0Lw%5D.mp3';
+const SOUND_KEY = 'oh-sound';
 
 export class Audio {
     constructor() {
@@ -14,19 +16,78 @@ export class Audio {
         this.monsterEl = null;
         this.stepEl = null;
         this.doorEl = null;
+        this.menuEl = null;
         this.bgmEl = null;
         this.started = false;
+        this.menuReady = false;
+        this.muted = localStorage.getItem(SOUND_KEY) === 'off';
+    }
+
+    /** Call on the loading screen — browsers may still wait for a user gesture. */
+    prepareMenuMusic() {
+        if (this.menuEl) return;
+        this.menuEl = new window.Audio(MENU_BGM_URL);
+        this.menuEl.preload = 'auto';
+        this.menuEl.loop = true;
+        this.menuEl.volume = 0.38;
+        this.menuReady = true;
+        this.playMenuMusic();
+    }
+
+    playMenuMusic() {
+        if (this.muted || this.started || !this.menuEl) return;
+        const play = () => {
+            this.menuEl.play().catch(() => {});
+        };
+        if (this.menuEl.readyState >= 2) play();
+        else this.menuEl.addEventListener('canplaythrough', play, { once: true });
+    }
+
+    stopMenuMusic() {
+        if (!this.menuEl) return;
+        this.menuEl.pause();
+        this.menuEl.currentTime = 0;
+    }
+
+    isSoundOn() {
+        return !this.muted;
+    }
+
+    setSoundOn(on) {
+        this.muted = !on;
+        try {
+            localStorage.setItem(SOUND_KEY, this.muted ? 'off' : 'on');
+        } catch {
+            // ignore quota / private mode
+        }
+
+        if (this.master) this.master.gain.value = this.muted ? 0 : 0.45;
+
+        if (this.muted) {
+            this.menuEl?.pause();
+            this.bgmEl?.pause();
+            return;
+        }
+
+        if (this.started) this.resumeMusic();
+        else this.playMenuMusic();
+    }
+
+    toggleSound() {
+        this.setSoundOn(this.muted);
+        return this.isSoundOn();
     }
 
     start() {
         if (this.started) return;
         this.started = true;
+        this.stopMenuMusic();
 
         const Ctx = window.AudioContext || window.webkitAudioContext;
         if (Ctx) {
             this.ctx = new Ctx();
             this.master = this.ctx.createGain();
-            this.master.gain.value = 0.45;
+            this.master.gain.value = this.muted ? 0 : 0.45;
             this.master.connect(this.ctx.destination);
 
             const length = this.ctx.sampleRate * 2;
@@ -54,14 +115,12 @@ export class Audio {
         this.bgmEl = new window.Audio(BGM_URL);
         this.bgmEl.preload = 'auto';
         this.bgmEl.loop = true;
-        // Half of the previous mix so SFX cut through more clearly.
         this.bgmEl.volume = 0.16;
 
-        // Browsers block autoplay until a gesture; start() is called from the
-        // ENTER button, so play() is allowed here.
+        if (this.muted) return;
+
         const playBgm = () => {
             this.bgmEl.play().catch(() => {
-                // Retry once after a short delay if decode is still pending.
                 setTimeout(() => this.bgmEl?.play().catch(() => {}), 400);
             });
         };
@@ -70,7 +129,7 @@ export class Audio {
     }
 
     noise(duration, { gain = 0.2, type = 'lowpass', frequency = 900, q = 1 } = {}) {
-        if (!this.ctx) return;
+        if (this.muted || !this.ctx) return;
         const src = this.ctx.createBufferSource();
         src.buffer = this.noiseBuffer;
         const filter = this.ctx.createBiquadFilter();
@@ -87,7 +146,7 @@ export class Audio {
     }
 
     tone(frequency, duration, { gain = 0.15, type = 'sine', slideTo = null } = {}) {
-        if (!this.ctx) return;
+        if (this.muted || !this.ctx) return;
         const osc = this.ctx.createOscillator();
         const env = this.ctx.createGain();
         const now = this.ctx.currentTime;
@@ -102,6 +161,7 @@ export class Audio {
     }
 
     footstep() {
+        if (this.muted) return;
         if (this.stepEl) {
             try {
                 // Clone so rapid steps can overlap without cutting each other off.
@@ -122,6 +182,7 @@ export class Audio {
     }
 
     doorOpen() {
+        if (this.muted) return;
         if (this.doorEl) {
             try {
                 this.doorEl.currentTime = 0;
@@ -154,6 +215,7 @@ export class Audio {
     }
 
     playMonster(volume = 0.7) {
+        if (this.muted) return;
         if (!this.monsterEl) {
             this.growlFallback();
             return;
@@ -183,6 +245,7 @@ export class Audio {
     }
 
     laser() {
+        if (this.muted) return;
         if (this.laserEl) {
             try {
                 this.laserEl.currentTime = 0;
@@ -217,9 +280,12 @@ export class Audio {
 
     pauseMusic() {
         this.bgmEl?.pause();
+        this.menuEl?.pause();
     }
 
     resumeMusic() {
-        this.bgmEl?.play().catch(() => {});
+        if (this.muted) return;
+        if (this.started) this.bgmEl?.play().catch(() => {});
+        else this.playMenuMusic();
     }
 }

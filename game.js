@@ -103,9 +103,28 @@ function cacheUI() {
         'health-fill', 'battery-fill', 'stamina-fill', 'objective-text', 'heartbeat-overlay',
         'damage-flash', 'start-screen', 'chapter-end', 'death-screen', 'pause-screen',
         'interact-prompt', 'battery-count', 'crosshair', 'start-button', 'monster-toggle',
-        'graphics-toggle', 'perf-hud', 'start-graphics', 'pause-graphics', 'rotate-overlay'
+        'graphics-toggle', 'perf-hud', 'start-graphics', 'pause-graphics', 'rotate-overlay',
+        'load-fill', 'load-status', 'sound-toggle'
     ]) {
         ui[id] = document.getElementById(id);
+    }
+}
+
+function syncSoundToggle() {
+    const btn = ui['sound-toggle'];
+    if (!btn) return;
+    const on = audio.isSoundOn();
+    btn.textContent = on ? 'SOUND: ON' : 'SOUND: OFF';
+    btn.classList.toggle('sound-off', !on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
+
+function setLoadProgress(fraction, label) {
+    const pct = Math.max(0, Math.min(100, Math.round((fraction || 0) * 100)));
+    if (ui['load-fill']) ui['load-fill'].style.width = `${pct}%`;
+    if (ui['load-status']) ui['load-status'].textContent = label || `Loading ${pct}%`;
+    if (ui['start-button'] && ui['start-button'].disabled) {
+        ui['start-button'].textContent = label || `LOADING ${pct}%`;
     }
 }
 
@@ -194,6 +213,26 @@ function cycleGraphicsQuality() {
 
 async function init() {
     cacheUI();
+    syncSoundToggle();
+    audio.prepareMenuMusic();
+
+    ui['sound-toggle']?.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        audio.toggleSound();
+        syncSoundToggle();
+        // First click also unlocks autoplay for the menu theme.
+        audio.playMenuMusic();
+    });
+
+    // Browsers block autoplay until a gesture — unlock menu music on first tap.
+    const unlockMenuAudio = () => {
+        audio.playMenuMusic();
+        window.removeEventListener('pointerdown', unlockMenuAudio);
+        window.removeEventListener('keydown', unlockMenuAudio);
+    };
+    window.addEventListener('pointerdown', unlockMenuAudio, { once: true });
+    window.addEventListener('keydown', unlockMenuAudio, { once: true });
 
     state.hardware = detectHardware();
     state.isMobile = state.hardware.isMobile || isTouchDevice();
@@ -241,29 +280,28 @@ async function init() {
     // Host only serves files. Avoid double-downloading heavy assets on mobile /
     // port-share (that made the loading button look frozen at 0%).
     if (state.isMobile) {
-        ui['start-button'].textContent = 'WARMING DECODER…';
+        setLoadProgress(0.02, 'WARMING DECODER…');
         await downloadAssetsToClient((fraction, label) => {
-            ui['start-button'].textContent =
-                `PREP ${Math.round(fraction * 100)}% (${label || 'assets'})`;
+            setLoadProgress(fraction * 0.35, `PREP ${Math.round(fraction * 100)}% (${label || 'assets'})`);
         }, { skipHeavy: true });
     } else {
-        ui['start-button'].textContent = 'DOWNLOADING 0%';
+        setLoadProgress(0.02, 'DOWNLOADING 0%');
         await downloadAssetsToClient((fraction, label) => {
-            ui['start-button'].textContent =
-                `DOWNLOADING ${Math.round(fraction * 100)}% — ${label || 'assets'}`;
+            setLoadProgress(fraction * 0.45, `DOWNLOADING ${Math.round(fraction * 100)}% — ${label || 'assets'}`);
         }, { skipHeavy: false });
     }
 
     await loadModels((fraction, name) => {
         const label = MODEL_LABELS[name] || name || 'model';
         const pct = Math.round(fraction * 100);
-        ui['start-button'].textContent = `LOADING ${label.toUpperCase()} ${pct}%`;
+        const base = state.isMobile ? 0.35 : 0.45;
+        setLoadProgress(base + fraction * (0.92 - base), `LOADING ${label.toUpperCase()} ${pct}%`);
     }, {
         sequential: state.isMobile,
         timeoutMs: state.isMobile ? 90000 : 60000
     });
 
-    ui['start-button'].textContent = 'BUILDING LEVEL…';
+    setLoadProgress(0.95, 'BUILDING LEVEL…');
     level = new Level(scene).build();
     // spawn.y is the floor; player.position.y is eye height above that floor.
     player.position.set(level.spawn.x, level.spawn.y + EYE_HEIGHT, level.spawn.z);
@@ -284,6 +322,7 @@ async function init() {
     updateUI();
     exposeDebugHooks();
 
+    setLoadProgress(1, 'READY');
     ui['start-button'].textContent = state.isMobile ? 'TAP TO ENTER (LANDSCAPE)' : 'ENTER THE OFFICE';
     ui['start-button'].disabled = false;
 

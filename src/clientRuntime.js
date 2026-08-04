@@ -9,6 +9,11 @@ export const CLIENT_ASSET_URLS = [
     { url: '/music/sound/step.mp3', label: 'footsteps', heavy: false },
     { url: '/music/sound/open_door.mp3', label: 'door sfx', heavy: false },
     {
+        url: '/music/background%20music/Resident%20evil%204%20-%20Save%20Theme.mp3',
+        label: 'menu music',
+        heavy: true
+    },
+    {
         url: '/music/background%20music/Resident%20Evil%204%20OST%20-%20Garrador%20%5BX70DwhWz0Lw%5D.mp3',
         label: 'music',
         heavy: true
