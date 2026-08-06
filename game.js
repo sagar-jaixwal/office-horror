@@ -104,10 +104,39 @@ function cacheUI() {
         'damage-flash', 'start-screen', 'chapter-end', 'death-screen', 'pause-screen',
         'interact-prompt', 'battery-count', 'crosshair', 'start-button', 'monster-toggle',
         'graphics-toggle', 'perf-hud', 'start-graphics', 'pause-graphics', 'rotate-overlay',
-        'load-fill', 'load-status', 'sound-toggle'
+        'load-fill', 'load-status', 'sound-toggle', 'load-tip-title', 'load-tip-body', 'load-enter-label'
     ]) {
         ui[id] = document.getElementById(id);
     }
+}
+
+const LOAD_TIPS = [
+    {
+        title: 'Status: The Last Shift',
+        body: "Randolph's office. The lights failed hours ago. Something is hunting through these rooms."
+    },
+    {
+        title: 'Status: Battery Drain',
+        body: 'Your torch will not last forever. Spare batteries are scattered through the dark halls.'
+    },
+    {
+        title: 'Status: Locked Exit',
+        body: 'The stairwell deadbolt needs the emergency key. Find it before the hunters find you.'
+    },
+    {
+        title: 'Status: Laser Ready',
+        body: 'Left click, right click, or Space fires the laser. Stay quiet when you can — fear builds fast.'
+    }
+];
+
+let loadTipIndex = 0;
+let loadTipTimer = null;
+
+function rotateLoadTip() {
+    const tip = LOAD_TIPS[loadTipIndex % LOAD_TIPS.length];
+    if (ui['load-tip-title']) ui['load-tip-title'].textContent = tip.title;
+    if (ui['load-tip-body']) ui['load-tip-body'].textContent = tip.body;
+    loadTipIndex += 1;
 }
 
 function syncSoundToggle() {
@@ -123,8 +152,9 @@ function setLoadProgress(fraction, label) {
     const pct = Math.max(0, Math.min(100, Math.round((fraction || 0) * 100)));
     if (ui['load-fill']) ui['load-fill'].style.width = `${pct}%`;
     if (ui['load-status']) ui['load-status'].textContent = label || `Loading ${pct}%`;
-    if (ui['start-button'] && ui['start-button'].disabled) {
-        ui['start-button'].textContent = label || `LOADING ${pct}%`;
+    if (ui['start-button']?.disabled && ui['load-enter-label']) {
+        const text = label || `Loading ${pct}%`;
+        ui['load-enter-label'].textContent = state.isMobile ? text : `: ${text}`;
     }
 }
 
@@ -214,6 +244,8 @@ function cycleGraphicsQuality() {
 async function init() {
     cacheUI();
     syncSoundToggle();
+    rotateLoadTip();
+    loadTipTimer = setInterval(rotateLoadTip, 6500);
     audio.prepareMenuMusic();
 
     ui['sound-toggle']?.addEventListener('click', (event) => {
@@ -221,18 +253,17 @@ async function init() {
         event.stopPropagation();
         audio.toggleSound();
         syncSoundToggle();
-        // First click also unlocks autoplay for the menu theme.
-        audio.playMenuMusic();
+        if (audio.isSoundOn()) audio.ensureMenuMusic();
     });
 
-    // Browsers block autoplay until a gesture — unlock menu music on first tap.
+    // Browsers block autoplay until a gesture — keep unlocking while on the menu.
     const unlockMenuAudio = () => {
-        audio.playMenuMusic();
-        window.removeEventListener('pointerdown', unlockMenuAudio);
-        window.removeEventListener('keydown', unlockMenuAudio);
+        if (state.started) return;
+        audio.ensureMenuMusic();
     };
-    window.addEventListener('pointerdown', unlockMenuAudio, { once: true });
-    window.addEventListener('keydown', unlockMenuAudio, { once: true });
+    window.addEventListener('pointerdown', unlockMenuAudio);
+    window.addEventListener('keydown', unlockMenuAudio);
+    ui['start-screen']?.addEventListener('pointerdown', unlockMenuAudio);
 
     state.hardware = detectHardware();
     state.isMobile = state.hardware.isMobile || isTouchDevice();
@@ -322,8 +353,23 @@ async function init() {
     updateUI();
     exposeDebugHooks();
 
-    setLoadProgress(1, 'READY');
-    ui['start-button'].textContent = state.isMobile ? 'TAP TO ENTER (LANDSCAPE)' : 'ENTER THE OFFICE';
+    setLoadProgress(1, 'Ready');
+    if (loadTipTimer) {
+        clearInterval(loadTipTimer);
+        loadTipTimer = null;
+    }
+    if (ui['load-tip-title']) ui['load-tip-title'].textContent = 'Status: Ready';
+    if (ui['load-tip-body']) {
+        ui['load-tip-body'].textContent = state.isMobile
+            ? 'Rotate to landscape, then press A to enter the office.'
+            : 'Click A or press Enter to step into Randolph\'s office.';
+    }
+    if (ui['load-enter-label']) {
+        ui['load-enter-label'].textContent = state.isMobile
+            ? 'Tap to enter'
+            : ': Enter the office';
+    }
+    ui['start-screen']?.classList.add('is-ready');
     ui['start-button'].disabled = false;
 
     // Cache for next visit only after the game is ready (won't stall first load).
@@ -599,6 +645,17 @@ function resumeGame() {
 
 function setupEventListeners() {
     document.getElementById('start-button').addEventListener('click', beginGame);
+    document.addEventListener('keydown', (event) => {
+        if (event.code === 'KeyA' || event.code === 'Enter') {
+            if (ui['start-button'] && !ui['start-button'].disabled && ui['start-screen']?.style.display !== 'none') {
+                // Only while start screen is visible and ready.
+                if (ui['start-screen']?.classList.contains('is-ready') && getComputedStyle(ui['start-screen']).display !== 'none') {
+                    event.preventDefault();
+                    beginGame();
+                }
+            }
+        }
+    });
     document.getElementById('retry-button').addEventListener('click', () => window.location.reload());
     ui['monster-toggle'].addEventListener('click', (event) => {
         event.preventDefault();

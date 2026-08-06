@@ -25,28 +25,58 @@ export class Audio {
 
     /** Call on the loading screen — browsers may still wait for a user gesture. */
     prepareMenuMusic() {
-        if (this.menuEl) return;
+        if (this.menuEl) {
+            this.ensureMenuMusic();
+            return;
+        }
         this.menuEl = new window.Audio(MENU_BGM_URL);
         this.menuEl.preload = 'auto';
         this.menuEl.loop = true;
-        this.menuEl.volume = 0.38;
+        this.menuEl.volume = 0.4;
         this.menuReady = true;
-        this.playMenuMusic();
+        // Helps some mobile browsers resume after a gesture.
+        this.menuEl.setAttribute('playsinline', '');
+        this.menuEl.setAttribute('webkit-playsinline', '');
+        this.ensureMenuMusic();
+    }
+
+    isMenuPlaying() {
+        return Boolean(this.menuEl && !this.menuEl.paused && !this.menuEl.ended);
     }
 
     playMenuMusic() {
         if (this.muted || this.started || !this.menuEl) return;
-        const play = () => {
-            this.menuEl.play().catch(() => {});
-        };
-        if (this.menuEl.readyState >= 2) play();
-        else this.menuEl.addEventListener('canplaythrough', play, { once: true });
+        try {
+            const play = this.menuEl.play();
+            if (play?.catch) {
+                play.catch(() => {
+                    // Autoplay blocked until a user gesture — ensureMenuMusic retries then.
+                });
+            }
+        } catch {
+            // ignore
+        }
+    }
+
+    /** Keep trying until the Save Theme is actually audible (or muted / in-game). */
+    ensureMenuMusic() {
+        if (this.muted || this.started) return;
+        if (!this.menuEl) {
+            this.prepareMenuMusic();
+            return;
+        }
+        if (this.isMenuPlaying()) return;
+        if (this.menuEl.readyState >= 2) this.playMenuMusic();
+        else {
+            this.menuEl.addEventListener('canplaythrough', () => this.playMenuMusic(), { once: true });
+            this.menuEl.load?.();
+        }
     }
 
     stopMenuMusic() {
         if (!this.menuEl) return;
         this.menuEl.pause();
-        this.menuEl.currentTime = 0;
+        try { this.menuEl.currentTime = 0; } catch { /* ignore */ }
     }
 
     isSoundOn() {
@@ -69,8 +99,15 @@ export class Audio {
             return;
         }
 
-        if (this.started) this.resumeMusic();
-        else this.playMenuMusic();
+        if (this.started) {
+            this.resumeMusic();
+            return;
+        }
+
+        if (this.menuEl) {
+            try { this.menuEl.currentTime = 0; } catch { /* ignore */ }
+        }
+        this.ensureMenuMusic();
     }
 
     toggleSound() {
@@ -286,6 +323,6 @@ export class Audio {
     resumeMusic() {
         if (this.muted) return;
         if (this.started) this.bgmEl?.play().catch(() => {});
-        else this.playMenuMusic();
+        else this.ensureMenuMusic();
     }
 }
